@@ -10,7 +10,9 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
+import os
 from pathlib import Path
+from corsheaders.defaults import default_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -50,6 +52,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
 ]
 
 ROOT_URLCONF = "core.urls"
@@ -89,6 +92,28 @@ LOGGING = {
 }
 
 WSGI_APPLICATION = "core.wsgi.application"
+
+# Django CORS and CSRF
+# https://github.com/OttoYiu/django-cors-headers
+CORS_ORIGIN_ALLOW_ALL = True
+
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "WWW-AUTHORIZATION",
+    "HTTP_WWW_AUTHORIZATION",
+    "X-Fancontent-User",
+    "Authorization",
+]
+
+CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
 
 # Database

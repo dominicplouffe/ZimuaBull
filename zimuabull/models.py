@@ -10,11 +10,24 @@ class DaySymbolChoice(models.TextChoices):
     NA = "NA"
 
 
+class CloseBucketChoice(models.TextChoices):
+    UP = "UP"
+    DOWN = "DOWN"
+    NA = "NA"
+
+
+class DayPredictionChoice(models.TextChoices):
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
+    NEUTRAL = "NEUTRAL"
+
+
 # Create your models here.
 class Exchange(models.Model):
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=10, null=True, blank=True)
     country = models.CharField(max_length=100)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -28,6 +41,18 @@ class Symbol(models.Model):
     name = models.CharField(max_length=100)
     symbol = models.CharField(max_length=10)
     exchange = models.ForeignKey(Exchange, on_delete=models.CASCADE)
+
+    last_open = models.FloatField()
+    last_close = models.FloatField()
+    last_volume = models.IntegerField()
+    obv_status = models.CharField(
+        max_length=20, choices=DaySymbolChoice.choices, default=DaySymbolChoice.NA
+    )
+    thirty_close_trend = models.FloatField()
+    close_bucket = models.CharField(
+        max_length=20, choices=CloseBucketChoice.choices, default=CloseBucketChoice.NA
+    )
+    accuracy = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -55,6 +80,28 @@ class DaySymbol(models.Model):
     status = models.CharField(
         max_length=20, choices=DaySymbolChoice.choices, default=DaySymbolChoice.NA
     )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return "{} - {}".format(self.symbol, self.date)
+
+    unique_together = ("symbol", "date")
+
+
+class DayPrediction(models.Model):
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
+    date = models.DateField()
+    buy_price = models.FloatField()
+    sell_price = models.FloatField()
+    diff = models.FloatField()
+    prediction = models.CharField(
+        max_length=20,
+        choices=DayPredictionChoice.choices,
+        default=DayPredictionChoice.NEUTRAL,
+    )
+    buy_date = models.DateField(null=True, blank=True)
+    sell_date = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
