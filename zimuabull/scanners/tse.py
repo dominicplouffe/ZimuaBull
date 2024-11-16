@@ -227,34 +227,27 @@ class BaseScanner:
 
             prev_status = DaySymbolChoice.NA
             days_since_buy = 0
-            last_status = DaySymbolChoice.NA
             statuses = []
+            is_purchased = False
             for _, row in res.iterrows():
                 try:
-                    last_status = prev_status
                     status = DaySymbolChoice.NA
-                    if prev_status == DaySymbolChoice.BUY:
-                        status = DaySymbolChoice.HOLD
 
-                    if (
-                        row["obv_signal_sum"] == 0
-                        and prev_status == DaySymbolChoice.HOLD
-                        and days_since_buy >= 4
-                    ):
-                        status = DaySymbolChoice.SELL
-                    elif (
-                        row["obv_signal_sum"] == 0 and prev_status == DaySymbolChoice.NA
-                    ):
+                    if row["obv_signal_sum"] == 0 and prev_status == DaySymbolChoice.NA:
                         status = DaySymbolChoice.BUY
                         days_since_buy = 0
-                    elif (
-                        row["obv_signal_sum"] == 2
-                        and prev_status == DaySymbolChoice.HOLD
-                        and days_since_buy >= 4
-                    ):
-                        status = DaySymbolChoice.SELL
-                    elif prev_status == DaySymbolChoice.HOLD:
+                        is_purchased = True
+                    elif is_purchased:
+                        days_since_buy += 1
                         status = DaySymbolChoice.HOLD
+                    else:
+                        status = DaySymbolChoice.NA
+
+                    if days_since_buy >= 14:
+                        status = DaySymbolChoice.SELL
+                        is_purchased = False
+                        days_since_buy = 0
+
                     day_symbol, _ = DaySymbol.objects.update_or_create(
                         symbol=symbol,
                         date=row["date"],
@@ -276,7 +269,6 @@ class BaseScanner:
                     )
                     day_symbol.save()
                     prev_status = status
-                    days_since_buy += 1
                     statuses.append(status)
                 except ValueError as e:
                     logger.error(f"Error saving {symbol.symbol}: {e}")
@@ -290,7 +282,7 @@ class BaseScanner:
             symbol.last_open = last_row["open"]
             symbol.last_close = last_row["close"]
             symbol.last_volume = last_row["volume"]
-            symbol.obv_status = last_status
+            symbol.obv_status = last_row["status"]
             symbol.thirty_close_trend = last_row["30_day_close_trendline"]
             symbol.close_bucket = self.get_close_bucket(res)
             symbol.save()
