@@ -9,22 +9,26 @@ services:
       - environment.prod
     volumes:
       - .db_data/db.sqlite3:/db.sqlite3  # Persist the SQLite database file
+    depends_on:
+      - redis  # Ensure Redis starts before the web service
     command: >
       sh -c "
-         apt update && apt install -y git;
-         set -a && . /etc/environment && set +a;
          if [ ! -d /code ]; then
           mkdir -p /code;
         fi &&
         if [ ! -d /code/.git ]; then
             git clone https://github.com/dominicplouffe/ZimuaBull /code;
+        else
+            cd /code && git pull origin master;
         fi &&
         cd /code &&
-        while true; do
-            sleep 1  # Waits for 1 second before repeating
-        done
-        # pip install -r requirements.txt &&
-        # python manage.py migrate &&
-        # python manage.py runserver 0.0.0.0:8000
+        pip install -r requirements.txt &&
+        python manage.py migrate &&
+        supervisord -c /etc/supervisor/supervisord.conf &&
+        python manage.py runserver 0.0.0.0:8000
       "
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
       
