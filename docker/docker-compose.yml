@@ -5,11 +5,14 @@ services:
     build: .
     ports:
       - "8000:8000"
+    env_file:
+      - environment.prod
     volumes:
       - .db_data/db.sqlite3:/db.sqlite3  # Persist the SQLite database file
     command: >
       sh -c "
          apt update && apt install -y git;
+         set -a && . /etc/environment && set +a;
          if [ ! -d /code ]; then
           mkdir -p /code;
         fi &&

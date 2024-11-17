@@ -6,6 +6,7 @@ ENV PYTHONUNBUFFERED 1
 
 # Install dependencies
 COPY ./environment.prod /etc/environment
+RUN set -a && . /etc/environment && set +a
 
 # Expose port 8080
 EXPOSE 8080
