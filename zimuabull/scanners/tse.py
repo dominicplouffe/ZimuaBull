@@ -14,7 +14,6 @@ from zimuabull.models import (
 
 import pandas as pd
 import numpy as np
-import requests
 
 from urllib.error import HTTPError
 import yfinance as yf
@@ -27,9 +26,6 @@ class BaseScanner:
         self.exchange = exchange
         self.res = None
         self.suffix = EXCHANGES[exchange.code].get("suffix", None)
-
-    def scan(self):
-        raise NotImplementedError()
 
     def most_recent_trading_day(self):
         dt = datetime.now(tz=timezone.utc).date()
@@ -147,7 +143,6 @@ class BaseScanner:
         return angle
 
     def get_close_bucket(self, res):
-
         # get the last value of the 30_day_close_trendline from res
         close_trend_line = res["30_day_close_trendline"].iloc[-1]
 
@@ -158,7 +153,6 @@ class BaseScanner:
         return CloseBucketChoice.NA
 
     def calculate_predictions(self, symbol, res):
-
         # Loop through the rows of the dataframe
         buy_price = 0
         buy_date = None
@@ -202,7 +196,6 @@ class BaseScanner:
 
     def scan(self):
         for symbol in Symbol.objects.filter(exchange=self.exchange):
-
             DaySymbol.objects.filter(symbol=symbol).delete()
             DayPrediction.objects.filter(symbol=symbol).delete()
 
@@ -219,7 +212,7 @@ class BaseScanner:
             try:
                 res = self.get_obv_data(symbol.symbol)
             except HTTPError as e:
-                logger.error(f"Error downloading {symbol.symbol}: {e} - {url}")
+                logger.error(f"Error downloading {symbol.symbol}: {e}")
                 continue
 
             if res is None:

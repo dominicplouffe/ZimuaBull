@@ -13,7 +13,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 import os
 from pathlib import Path
 from corsheaders.defaults import default_headers
-# from celery.schedules import crontab
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -188,10 +188,15 @@ CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_ALWAYS_EAGER = (
     os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
 )
-# CELERY_BEAT_SCHEDULE = {
-#     "weather.tasks.weather.fetch_weather": {
-#         "task": "weather.tasks.weather.fetch_weather",
-#         "schedule": crontab(minute="*/15"),
-#         "options": {"queue": "pidashtasks"},
-#     },
-# }
+CELERY_BEAT_SCHEDULE = {
+    "weather.tasks.weather.fetch_weather": {
+        "task": "weather.tasks.weather.fetch_weather",
+        "schedule": crontab(minute="*/15"),
+        "options": {"queue": "pidashtasks"},
+    },
+    "zimuabull.tasks.scan.scan": {
+        "task": "zimuabull.tasks.scan.scan",
+        "schedule": crontab(hour=0, minute=0),
+        "options": {"queue": "pidashtasks"},
+    },
+}
