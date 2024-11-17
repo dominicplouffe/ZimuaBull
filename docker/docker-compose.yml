@@ -24,7 +24,7 @@ services:
         cd /code &&
         pip install --upgrade pip setuptools wheel
         pip install lxml numpy pandas --extra-index-url https://www.piwheels.org/simple &&
-        pip install -r requirements.txt &&
+        pip install -r requirements.docker &&
         python manage.py migrate &&
         supervisord -c /etc/supervisor/supervisord.conf &&
         python manage.py runserver 0.0.0.0:8000
