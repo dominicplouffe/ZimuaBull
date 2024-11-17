@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .db_data/db.sqlite3:/db.sqlite3  # Persist the SQLite database file
+    command: >
+      sh -c "
+         apt update && apt install -y git;
+         if [ ! -d /code ]; then
+          mkdir -p /code;
+        fi &&
+        if [ ! -d /code/.git ]; then
+            git clone https://github.com/dominicplouffe/ZimuaBull /code;
+        fi &&
+        cd /code &&
+        while true; do
+            sleep 1  # Waits for 1 second before repeating
+        done
+        # pip install -r requirements.txt &&
+        # python manage.py migrate &&
+        # python manage.py runserver 0.0.0.0:8000
+      "
+      
