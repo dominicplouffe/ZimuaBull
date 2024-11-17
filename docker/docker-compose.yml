@@ -22,6 +22,8 @@ services:
             cd /code && git pull origin master;
         fi &&
         cd /code &&
+        pip install --upgrade pip setuptools wheel
+        pip install lxml numpy pandas --extra-index-url https://www.piwheels.org/simple &&
         pip install -r requirements.txt &&
         python manage.py migrate &&
         supervisord -c /etc/supervisor/supervisord.conf &&
@@ -31,4 +33,3 @@ services:
     image: redis:latest
     ports:
       - "6379:6379"
-      
