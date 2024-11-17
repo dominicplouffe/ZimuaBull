@@ -16,7 +16,14 @@ from docopt import docopt
 import paramiko
 import time
 
-BUILD_DIRS = ["pidash", "weather", "tools", "manage.py", "code", "requirements.txt"]
+BUILD_DIRS = [
+    "core",
+    "zimuabull",
+    "weather",
+    "tools",
+    "manage.py",
+    "requirements.txt",
+]
 
 ZIP_FILENAME = "pidash.zip"
 
