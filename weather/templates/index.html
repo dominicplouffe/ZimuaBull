@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Weather</title>
+    <style>
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            color: #fff;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 0px;
+            font-size: 50px;
+        }
+
+        #container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            padding: 10px;
+            text-align: center;
+        }
+
+        .temp {
+            font-size: 50px;
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .temp-small {
+            font-size: 30px;
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .weather-row {
+            display: inline-block;
+            width: 100px;
+            margin: 5px;
+            text-align: center;
+        }
+
+        .weather-row-cell {
+            font-size: 15px;
+
+        }
+
+        .break {
+            width: 100%;
+            border-bottom: 1px solid #fff;
+            padding-top: 10px;
+            padding-bottom: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="container">
+        <table style="width: 100%;">
+
+            <body>
+                <tr>
+                    <td style="width: 20%">
+                        <h1>{{ weather.description }}</h1>
+                        <img src="http://openweathermap.org/img/wn/{{ weather.icon }}@4x.png" />
+                        <div class="temp" style="margin-top: 0px;">
+                            {{ weather.temperature}}&deg;
+                        </div>
+                    </td>
+                    <td style="width: 80%; vertical-align: top;">
+
+                        <h2>Today</h2>
+
+                        <div class="weather-row" style="width: 100%;">
+                            <div class="weather-row-cell" style="font-size: 20px">
+                                <span>Humidity: {{ weather.humidity }}%</span>
+                                -
+                                <span>Pressure: {{ weather.pressure }}hPa</span>
+                                -
+                                <span>Wind: {{ weather.wind_speed }}m/s</span>
+                                -
+                                <span>Dir: {{ weather.wind_direction }}&deg;</span>
+                            </div>
+                        </div>
+
+                        <div class="break"></div>
+
+                        <h2>Hourly</h2>
+
+                        {% for hourly in weather.hourly %}
+                        <div class="weather-row">
+                            <div class="weather-row-cell" style="font-size: 20px">
+                                <strong>{{ hourly.temperature }}&deg;</strong>
+                            </div>
+                            <div class="weather-row-cell">
+                                <img src="http://openweathermap.org/img/wn/{{ hourly.icon }}.png" />
+                            </div>
+                            <div class="weather-row-cell">{{ hourly.date }}</div>
+                        </div>
+                        {% endfor %}
+
+                        <div class="break"></div>
+
+                        <h2>Daily</h2>
+
+                        {% for daily in weather.daily %}
+                        <div class="weather-row">
+                            <div class="weather-row-cell" style="font-size: 20px">
+                                <strong>{{ daily.low }}&deg;</strong>-<strong>{{ daily.high }}&deg;</strong>
+                            </div>
+                            <div class="weather-row-cell">
+                                <img src="http://openweathermap.org/img/wn/{{ daily.icon }}.png" />
+                            </div>
+                            <div class="weather-row-cell">{{ daily.date }}</div>
+                        </div>
+                        {% endfor %}
+
+                        <div class="break"></div>
+                    </td>
+                </tr>
+            </body>
+        </table>
+        <div style="margin-top: 40px;">
+            <span>Updated: {{ weather.updated }}</span>
+            -
+            <span id="current-time"></span>
+        </div>
+
+
+    </div>
+    <script>
+
+        const colors = [
+            '#4d86ff',
+            '#D9215C',
+            '#5CD921',
+            '#D99E21'
+        ]
+
+        let backgrounColor = '#4d86ff';
+        var url = new URL(`${document.location.href}`);
+        var c = url.searchParams.get("c");
+
+        if (c !== null) {
+            backgrounColor = `#${c}`;
+        }
+        document.body.style.backgroundColor = backgrounColor;
+
+        const setBackgroundColor = () => {
+            let c = backgrounColor;
+            while (c === backgrounColor) {
+                c = colors[Math.floor(Math.random() * colors.length)];
+            }
+            backgrounColor = c;
+            document.body.style.backgroundColor = backgrounColor;
+        }
+
+        const refresh = () => {
+            document.location.href = `?c=${backgrounColor.replace('#', '')}`;
+        }
+        document.getElementById('current-time').innerHTML = new Date().toLocaleString();
+        setInterval(refresh, 15000);
+
+        document.getElementById('container').addEventListener("click", function () {
+            setBackgroundColor();
+        })
+
+    </script>
+</body>
+
+</html>

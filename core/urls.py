@@ -23,4 +23,5 @@ from django.urls import include
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("zimuabull.urls")),
+    path('', include('weather.urls')),
 ]

@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 import os
 from pathlib import Path
 from corsheaders.defaults import default_headers
+# from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -32,7 +33,7 @@ ALLOWED_HOSTS = []
 
 # Application definition
 
-INSTALLED_APPS = [
+INSTALLED_APPS = [    
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -42,6 +43,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "django_filters",
     "zimuabull.apps.ZimuabullConfig",
+    "weather.apps.WeatherConfig",
+
 ]
 
 MIDDLEWARE = [
@@ -167,3 +170,28 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# App Settings for weather app
+OPEN_WEATHER_MAP_API_KEY = os.environ.get("OPEN_WEATHER_MAP_API_KEY")
+OPEN_WEATHER_MAP_URL = f"https://api.openweathermap.org/data/3.0/onecall?lat=%s&lon=%s&units=metric&appid={OPEN_WEATHER_MAP_API_KEY}"
+
+# Celery Settings
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
+CELERY_RESULT_BACKEND = os.environ.get(
+    "CELERY_RESULT_BACKEND", "redis://localhost:6379"
+)
+CELERY_TASK_DEFAULT_QUEUE = "pidashtasks"
+CELERY_TASK_QUEUE_MAX_PRIORITY = 10
+CELERY_TASK_DEFAULT_PRIORITY = 5
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_ALWAYS_EAGER = (
+    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
+)
+# CELERY_BEAT_SCHEDULE = {
+#     "weather.tasks.weather.fetch_weather": {
+#         "task": "weather.tasks.weather.fetch_weather",
+#         "schedule": crontab(minute="*/15"),
+#         "options": {"queue": "pidashtasks"},
+#     },
+# }
