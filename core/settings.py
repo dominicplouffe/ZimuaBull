@@ -26,9 +26,7 @@ IS_PROD = os.environ.get("ENV", "local").lower() == "prod"
 SECRET_KEY = "django-insecure-9^t+tmaty!jecw-r342ac+*&6x3@m%13dr_71^6v!rjoz%m@p5"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = []
+DEBUG = False
 
 
 # Application definition
@@ -120,6 +118,9 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 ]
 
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
+
+env_trusted_origin = os.environ.get('TRUSTED_ORIGIN')
+CSRF_TRUSTED_ORIGINS = [] if not env_trusted_origin else [env_trusted_origin]
 
 
 # Database
