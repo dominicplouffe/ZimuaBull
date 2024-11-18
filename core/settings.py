@@ -100,6 +100,8 @@ WSGI_APPLICATION = "core.wsgi.application"
 # https://github.com/OttoYiu/django-cors-headers
 CORS_ORIGIN_ALLOW_ALL = True
 
+ALLOWED_HOSTS = ["*"]
+
 CORS_ALLOW_METHODS = [
     "DELETE",
     "GET",
