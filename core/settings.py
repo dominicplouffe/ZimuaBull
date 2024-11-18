@@ -200,7 +200,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "zimuabull.tasks.scan.scan": {
         "task": "zimuabull.tasks.scan.scan",
-        "schedule": crontab(hour=2, minute=0),
+        "schedule": crontab(hour=3, minute=5),
         "options": {"queue": "pidashtasks"},
     },
 }
