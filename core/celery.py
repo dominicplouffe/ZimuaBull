@@ -20,3 +20,5 @@ app.autodiscover_tasks(
         "zimuabull.tasks",
     ]
 )
+
+app.conf.beat_scheduler = "django_celery_beat.schedulers:DatabaseScheduler"
