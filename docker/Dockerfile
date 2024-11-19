@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y \
     libatlas-base-dev \
     libopenblas-dev \
     liblapack-dev \
+    libxslt-dev \
+    libxml2-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN apt update && apt install -y git && apt install -y supervisor;
 COPY ./sup-prod.conf /etc/supervisor/conf.d/sup-prod.conf
