@@ -26,7 +26,8 @@ IS_PROD = os.environ.get("ENV", "local").lower() == "prod"
 SECRET_KEY = "django-insecure-9^t+tmaty!jecw-r342ac+*&6x3@m%13dr_71^6v!rjoz%m@p5"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
+# Set DEBUG to True because of the static files
+DEBUG = True # os.environ.get("DEBUG", "false").lower() == "true"
 
 
 # Application definition
