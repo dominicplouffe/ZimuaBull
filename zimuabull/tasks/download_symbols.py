@@ -27,13 +27,15 @@ def download_tse():
         name = tds[2].text
 
         symbol = Symbol.objects.get_or_create(
-            name=name,
             symbol=symbol,
             exchange=exchange,
-            last_open=0,
-            last_close=0,
-            last_volume=0,
-            obv_status=DaySymbolChoice.NA,
-            thirty_close_trend=0,
-            close_bucket=CloseBucketChoice.NA,
+            defaults=dict(
+                name=name,
+                last_open=0,
+                last_close=0,
+                last_volume=0,
+                obv_status=DaySymbolChoice.NA,
+                thirty_close_trend=0,
+                close_bucket=CloseBucketChoice.NA,
+            ),
         )
