@@ -27,12 +27,12 @@ SECRET_KEY = "django-insecure-9^t+tmaty!jecw-r342ac+*&6x3@m%13dr_71^6v!rjoz%m@p5
 
 # SECURITY WARNING: don't run with debug turned on in production!
 # Set DEBUG to True because of the static files
-DEBUG = True # os.environ.get("DEBUG", "false").lower() == "true"
+DEBUG = True  # os.environ.get("DEBUG", "false").lower() == "true"
 
 
 # Application definition
 
-INSTALLED_APPS = [    
+INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -40,11 +40,13 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework.authtoken",
+    "dj_rest_auth",
     "django_filters",
     "django_celery_beat",
+    "corsheaders",
     "zimuabull.apps.ZimuabullConfig",
     "weather.apps.WeatherConfig",
-
 ]
 
 MIDDLEWARE = [
@@ -57,6 +59,20 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "corsheaders.middleware.CorsMiddleware",
 ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework.authentication.SessionAuthentication",
+        'rest_framework.authentication.TokenAuthentication',
+    ),
+}
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3001",  # React development server
+    "http://127.0.0.1:3001",  # Alternate localhost format
+    "https://zimua.dplouffe.ca",  # Production URL
+]
+
 
 ROOT_URLCONF = "core.urls"
 
@@ -120,7 +136,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
-env_trusted_origin = os.environ.get('TRUSTED_ORIGIN')
+env_trusted_origin = os.environ.get("TRUSTED_ORIGIN")
 CSRF_TRUSTED_ORIGINS = [] if not env_trusted_origin else [env_trusted_origin]
 
 

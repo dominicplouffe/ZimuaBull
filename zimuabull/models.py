@@ -109,3 +109,15 @@ class DayPrediction(models.Model):
         return "{} - {}".format(self.symbol, self.date)
 
     unique_together = ("symbol", "date")
+
+
+class Favorite(models.Model):
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
+    user = models.ForeignKey("auth.User", on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return "{} - {}".format(self.symbol, self.user)
+
+    unique_together = ("symbol", "user")

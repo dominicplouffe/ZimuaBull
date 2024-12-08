@@ -17,11 +17,13 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path
-from zimuabull import urls as zimuabull_urls
 from django.urls import include
+from dj_rest_auth.views import LoginView, LogoutView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/login/", LoginView.as_view(), name="login"),
+    path("api/logout/", LogoutView.as_view(), name="logout"),
     path("", include("zimuabull.urls")),
-    path('', include('weather.urls')),
+    path("", include("weather.urls")),
 ]
