@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     "django_celery_beat",
     "corsheaders",
     "zimuabull.apps.ZimuabullConfig",
+    "playbook.apps.PlaybookConfig",
     "weather.apps.WeatherConfig",
 ]
 

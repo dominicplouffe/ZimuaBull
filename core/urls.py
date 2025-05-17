@@ -26,4 +26,5 @@ urlpatterns = [
     path("api/logout/", LogoutView.as_view(), name="logout"),
     path("", include("zimuabull.urls")),
     path("", include("weather.urls")),
+    path("", include("playbook.urls")),
 ]
