@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 set -e
 
-# wait for Postgres (external) if you like
-if [ -n "$BULL_HOSTNAME" ] && [ -n "$BULL_PORT" ]; then
+# wait for Postgres (external) if you like - but only if not using SQLite
+if [ -n "$BULL_HOSTNAME" ] && [ -n "$BULL_PORT" ] && [ "$ENV" != "local" ]; then
   echo "Waiting for Postgres at ${BULL_HOSTNAME}:${BULL_PORT}..."
+  timeout=30
+  counter=0
   until nc -z $BULL_HOSTNAME $BULL_PORT; do
     sleep 0.1
+    counter=$((counter + 1))
+    if [ $counter -ge $((timeout * 10)) ]; then
+      echo "Timeout waiting for Postgres. Check connection settings."
+      echo "BULL_HOSTNAME=$BULL_HOSTNAME"
+      echo "BULL_PORT=$BULL_PORT"
+      exit 1
+    fi
   done
+  echo "Postgres is ready!"
 fi
 
 # wait for Redis

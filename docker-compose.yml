@@ -4,7 +4,7 @@ services:
   web:
     build:
       context: .
-    image: dplouffe/bull-server-web:latest
+    image: dplouffe/bull-server:latest
     container_name: bull-server-web
     command: ["web"]
     env_file: .env
@@ -19,7 +19,7 @@ services:
   celery:
     build:
       context: .
-    image: dplouffe/bull-server-celery:latest
+    image: dplouffe/bull-server:latest
     container_name: bull-server-celery
     command: ["celery"]
     env_file: .env
@@ -33,7 +33,7 @@ services:
   celery-beat:
     build:
       context: .
-    image: dplouffe/bull-server-beat:latest
+    image: dplouffe/bull-server:latest
     container_name: bull-server-beat
     command: ["beat"]
     env_file: .env

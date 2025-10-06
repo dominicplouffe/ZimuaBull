@@ -9,5 +9,6 @@ django-filter==24.3
 pandas==2.2.3
 yfinance==0.2.61
 dj-rest-auth==7.0.0
-psycopg2-binary==2.9.9
+psycopg2==2.9.10
 gunicorn==21.2.0
+python-dotenv==1.0.0
