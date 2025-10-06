@@ -14,8 +14,6 @@ from zimuabull.models import (
 
 import pandas as pd
 import numpy as np
-
-from urllib.error import HTTPError
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -211,7 +209,7 @@ class BaseScanner:
             logger.info(f"Scanning {symbol.symbol}")
             try:
                 res = self.get_obv_data(symbol.symbol)
-            except HTTPError as e:
+            except Exception as e:
                 logger.error(f"Error downloading {symbol.symbol}: {e}")
                 continue
 
@@ -288,4 +286,16 @@ class BaseScanner:
 class TSEScanner(BaseScanner):
     def __init__(self):
         exchange = Exchange.objects.get(code="TSE")
+        super().__init__(exchange)
+
+
+class NASDAQScanner(BaseScanner):
+    def __init__(self):
+        exchange = Exchange.objects.get(code="NASDAQ")
+        super().__init__(exchange)
+
+
+class NYSEScanner(BaseScanner):
+    def __init__(self):
+        exchange = Exchange.objects.get(code="NYSE")
         super().__init__(exchange)

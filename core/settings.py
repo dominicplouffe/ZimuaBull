@@ -15,6 +15,11 @@ from pathlib import Path
 from corsheaders.defaults import default_headers
 from celery.schedules import crontab
 
+
+def get_env_variable(var_name, default_value=None):
+    """Get environment variable or return default value"""
+    return os.environ.get(var_name, default_value)
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 IS_PROD = os.environ.get("ENV", "local").lower() == "prod"
@@ -46,8 +51,6 @@ INSTALLED_APPS = [
     "django_celery_beat",
     "corsheaders",
     "zimuabull.apps.ZimuabullConfig",
-    "playbook.apps.PlaybookConfig",
-    "weather.apps.WeatherConfig",
 ]
 
 MIDDLEWARE = [
@@ -144,12 +147,32 @@ CSRF_TRUSTED_ORIGINS = [] if not env_trusted_origin else [env_trusted_origin]
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3" if not IS_PROD else "../db.sqlite3/db.sqlite3",
+# Check if we're running in local development environment
+IS_LOCAL_DEV = os.environ.get("ENV", "local").lower() == "local"
+
+if IS_LOCAL_DEV:
+    # Use SQLite for local development
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+else:
+    # Use PostgreSQL for production/staging environments
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": get_env_variable("BULL_DB_NAME", ""),
+            "USER": get_env_variable("BULL_USERNAME", ""),
+            "PASSWORD": get_env_variable("BULL_PASSWORD", ""),
+            "HOST": get_env_variable("BULL_HOSTNAME", ""),
+            "PORT": get_env_variable("BULL_PORT", "5432"),
+            "TEST": {
+                "NAME": "auto_tests",
+            },
+        }
+    }
 
 
 # Password validation
@@ -194,10 +217,6 @@ STATIC_URL = "/static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# App Settings for weather app
-OPEN_WEATHER_MAP_API_KEY = os.environ.get("OPEN_WEATHER_MAP_API_KEY")
-OPEN_WEATHER_MAP_URL = f"https://api.openweathermap.org/data/3.0/onecall?lat=%s&lon=%s&units=metric&appid={OPEN_WEATHER_MAP_API_KEY}"
-
 # Celery Settings
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
 CELERY_RESULT_BACKEND = os.environ.get(
@@ -212,11 +231,6 @@ CELERY_TASK_ALWAYS_EAGER = (
     os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
 )
 CELERY_BEAT_SCHEDULE = {
-    "weather.tasks.weather.fetch_weather": {
-        "task": "weather.tasks.weather.fetch_weather",
-        "schedule": crontab(minute="*/15"),
-        "options": {"queue": "pidashtasks"},
-    },
     "zimuabull.tasks.scan.scan": {
         "task": "zimuabull.tasks.scan.scan",
         "schedule": crontab(hour=3, minute=5),

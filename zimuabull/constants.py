@@ -1,1 +1,5 @@
-EXCHANGES = {"TSE": {"suffix": ".TO"}}
+EXCHANGES = {
+    "TSE": {"suffix": ".TO"},
+    "NASDAQ": {"suffix": ""},
+    "NYSE": {"suffix": ""}
+}
