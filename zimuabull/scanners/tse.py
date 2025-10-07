@@ -5,8 +5,6 @@ from zimuabull.constants import EXCHANGES
 from zimuabull.models import (
     Symbol,
     Exchange,
-    DaySymbol,
-    DaySymbolChoice,
     CloseBucketChoice,
     DayPrediction,
     DayPredictionChoice,
@@ -151,136 +149,151 @@ class BaseScanner:
         return CloseBucketChoice.NA
 
     def calculate_predictions(self, symbol, res):
-        # Loop through the rows of the dataframe
-        buy_price = 0
-        buy_date = None
-        sell_price = 0
+        """
+        Predict near-future stock movement using technical indicators.
+        Uses a combination of:
+        - Price momentum (rate of change)
+        - Trend strength (30-day trendline angle)
+        - Volume momentum (OBV signal)
+        - Volatility (price differential trends)
+        """
+        # Need at least 30 days for meaningful predictions
+        if len(res) < 30:
+            logger.warning(f"Insufficient data for predictions on {symbol.symbol}")
+            return
+
+        # Calculate additional features for prediction
+        res['price_momentum'] = res['close'].pct_change(periods=5) * 100  # 5-day % change
+        res['volume_trend'] = res['obv_signal'].rolling(window=5).mean()  # 5-day avg OBV signal
+        res['volatility'] = res['price_diff'].rolling(window=10).std()  # 10-day volatility
+
         positive_count = 0
         total_count = 0
-        for _, row in res.iterrows():
-            status = row["status"]
 
-            if status == DaySymbolChoice.BUY:
-                buy_price = row["close"]
-                buy_date = row["date"]
-            elif status == DaySymbolChoice.SELL:
-                sell_price = row["close"]
-                if buy_price != 0:
-                    diff = sell_price - buy_price
-                    total_count += 1
-                    prediction = DayPredictionChoice.NEUTRAL
-                    if diff > 0:
-                        prediction = DayPredictionChoice.POSITIVE
-                        positive_count += 1
-                    elif diff < 0:
-                        prediction = DayPredictionChoice.NEGATIVE
+        # Start predictions after we have enough historical data
+        for i in range(30, len(res)):
+            row = res.iloc[i]
 
-                    DayPrediction.objects.update_or_create(
-                        symbol=symbol,
-                        date=row["date"],
-                        defaults=dict(
-                            buy_price=buy_price,
-                            sell_price=sell_price,
-                            diff=diff,
-                            prediction=prediction,
-                            buy_date=buy_date,
-                            sell_date=row["date"],
-                        ),
-                    )
-                buy_price = 0
-                sell_price = 0
+            # Get current values
+            price_momentum = row['price_momentum']
+            trend_angle = row['30_day_close_trendline']
+            volume_trend = row['volume_trend']
+            volatility = row['volatility']
+            obv_signal_sum = row['obv_signal_sum']
+
+            # Initialize score
+            score = 0
+
+            # Scoring system (-3 to +3)
+            # 1. Price Momentum (strong momentum = likely continuation)
+            if price_momentum > 3:
+                score += 1
+            elif price_momentum < -3:
+                score -= 1
+
+            # 2. Trend Strength (strong uptrend/downtrend)
+            if trend_angle > 5:
+                score += 1
+            elif trend_angle < -5:
+                score -= 1
+
+            # 3. Volume Momentum (buying/selling pressure)
+            if volume_trend > 0.7:  # Strong buying
+                score += 1
+            elif volume_trend < 0.3:  # Strong selling
+                score -= 1
+
+            # 4. OBV Signal (additional confirmation)
+            if obv_signal_sum >= 2:  # Consecutive volume increases
+                score += 0.5
+            elif obv_signal_sum == 0:  # Consecutive volume decreases
+                score -= 0.5
+
+            # 5. Volatility adjustment (high volatility = less confidence in trend)
+            # Reduce score magnitude when volatility is high (less predictable)
+            if volatility > 0:
+                avg_volatility = res['volatility'].mean()
+                if volatility > 1.5 * avg_volatility:  # High volatility
+                    score *= 0.7  # Dampen the score
+                elif volatility < 0.5 * avg_volatility:  # Low volatility
+                    score *= 1.2  # Amplify the score (more confidence)
+
+            # Determine prediction based on score
+            if score >= 1.5:
+                prediction = DayPredictionChoice.POSITIVE
+            elif score <= -1.5:
+                prediction = DayPredictionChoice.NEGATIVE
+            else:
+                prediction = DayPredictionChoice.NEUTRAL
+
+            # For accuracy calculation, look ahead 5 days to see if prediction was correct
+            future_price = None
+            actual_movement = None
+            if i + 5 < len(res):
+                current_close = row['close']
+                future_close = res.iloc[i + 5]['close']
+                price_change_pct = ((future_close - current_close) / current_close) * 100
+
+                # Determine actual movement (2% threshold for significant movement)
+                if price_change_pct > 2:
+                    actual_movement = DayPredictionChoice.POSITIVE
+                elif price_change_pct < -2:
+                    actual_movement = DayPredictionChoice.NEGATIVE
+                else:
+                    actual_movement = DayPredictionChoice.NEUTRAL
+
+                future_price = future_close
+
+                # Count accuracy
+                total_count += 1
+                if prediction == actual_movement:
+                    positive_count += 1
+
+            # Store prediction
+            DayPrediction.objects.update_or_create(
+                symbol=symbol,
+                date=row['date'],
+                defaults=dict(
+                    buy_price=row['close'],
+                    sell_price=future_price if future_price else row['close'],
+                    diff=future_price - row['close'] if future_price else 0,
+                    prediction=prediction,
+                    buy_date=row['date'],
+                    sell_date=res.iloc[i + 5]['date'] if i + 5 < len(res) else None,
+                ),
+            )
+
+        # Update symbol accuracy based on prediction accuracy
         symbol.accuracy = positive_count / total_count if total_count > 0 else 0
         symbol.save()
 
+        logger.info(f"Predictions for {symbol.symbol}: {positive_count}/{total_count} accurate ({symbol.accuracy:.2%})")
+
     def scan(self):
-        for symbol in Symbol.objects.filter(exchange=self.exchange):
-            DaySymbol.objects.filter(symbol=symbol).delete()
-            DayPrediction.objects.filter(symbol=symbol).delete()
+        """
+        Scan all symbols for this exchange using Celery tasks for parallel processing.
+        Use CELERY_TASK_ALWAYS_EAGER=True in settings to run synchronously for testing.
+        """
+        from zimuabull.tasks.process_symbol import process_symbol_data
 
-            # Check if the symbol is already in the database
-            # ds = DaySymbol.objects.filter(
-            #     symbol=symbol, date=self.most_recent_trading_day()
-            # ).first()
+        symbols = Symbol.objects.filter(exchange=self.exchange)
+        total_symbols = symbols.count()
 
-            # if ds is not None:
-            #     logger.info(f"Skipping {symbol.symbol}")
-            #     continue
+        logger.info(f"Starting scan for {self.exchange.code} with {total_symbols} symbols")
 
-            logger.info(f"Scanning {symbol.symbol}")
+        dispatched_count = 0
+        for symbol in symbols:
             try:
-                res = self.get_obv_data(symbol.symbol)
+                # Dispatch Celery task for each symbol
+                # Will run async if CELERY_TASK_ALWAYS_EAGER=False (production)
+                # Will run sync if CELERY_TASK_ALWAYS_EAGER=True (testing/development)
+                process_symbol_data.delay(symbol.id, self.exchange.code)
+                dispatched_count += 1
+                logger.info(f"Dispatched task for {symbol.symbol} ({dispatched_count}/{total_symbols})")
             except Exception as e:
-                logger.error(f"Error downloading {symbol.symbol}: {e}")
-                continue
+                logger.error(f"Error dispatching task for {symbol.symbol}: {e}")
 
-            if res is None:
-                continue
-
-            prev_status = DaySymbolChoice.NA
-            days_since_buy = 0
-            statuses = []
-            is_purchased = False
-            for _, row in res.iterrows():
-                try:
-                    status = DaySymbolChoice.NA
-
-                    if row["obv_signal_sum"] == 0 and prev_status == DaySymbolChoice.NA:
-                        status = DaySymbolChoice.BUY
-                        days_since_buy = 0
-                        is_purchased = True
-                    elif is_purchased:
-                        days_since_buy += 1
-                        status = DaySymbolChoice.HOLD
-                    else:
-                        status = DaySymbolChoice.NA
-
-                    if days_since_buy >= 14:
-                        status = DaySymbolChoice.SELL
-                        is_purchased = False
-                        days_since_buy = 0
-
-                    day_symbol, _ = DaySymbol.objects.update_or_create(
-                        symbol=symbol,
-                        date=row["date"],
-                        defaults=dict(
-                            open=row["open"],
-                            high=row["high"],
-                            low=row["low"],
-                            adj_close=row["adj_close"],
-                            close=row["close"],
-                            volume=row["volume"],
-                            obv=row["obv"],
-                            obv_signal=row["obv_signal"],
-                            obv_signal_sum=row["obv_signal_sum"],
-                            price_diff=row["price_diff"],
-                            thirty_price_diff=row["30_day_price_diff_avg"],
-                            thirty_close_trend=row["30_day_close_trendline"],
-                            status=status,
-                        ),
-                    )
-                    day_symbol.save()
-                    prev_status = status
-                    statuses.append(status)
-                except ValueError as e:
-                    logger.error(f"Error saving {symbol.symbol}: {e}")
-                    continue
-
-            res["status"] = statuses
-
-            if len(res) == 0:
-                continue
-            last_row = res.iloc[-1]
-            symbol.last_open = last_row["open"]
-            symbol.last_close = last_row["close"]
-            symbol.last_volume = last_row["volume"]
-            symbol.obv_status = last_row["status"]
-            symbol.thirty_close_trend = last_row["30_day_close_trendline"]
-            symbol.close_bucket = self.get_close_bucket(res)
-            symbol.save()
-
-            self.calculate_predictions(symbol, res)
-
-            # break
+        logger.info(f"Dispatched {dispatched_count} Celery tasks for {self.exchange.code}")
 
 
 class TSEScanner(BaseScanner):

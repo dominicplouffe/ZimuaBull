@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "django_filters",
     "django_celery_beat",
     "corsheaders",
+    "drf_spectacular",
     "zimuabull.apps.ZimuabullConfig",
 ]
 
@@ -69,6 +70,16 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
         'rest_framework.authentication.TokenAuthentication',
     ),
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "ZimuaBull API",
+    "DESCRIPTION": "Stock market analysis and prediction API. Track symbols across multiple exchanges (TSE, NASDAQ, NYSE) with technical indicators, daily OHLCV data, and AI-powered predictions for near-future price movements.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SCHEMA_PATH_PREFIX": "/api/",
 }
 
 CORS_ALLOWED_ORIGINS = [

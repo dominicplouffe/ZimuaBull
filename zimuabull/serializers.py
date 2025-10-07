@@ -1,8 +1,16 @@
 from rest_framework import serializers
-from .models import Symbol, DaySymbol, DayPrediction, Favorite
+from .models import Symbol, DaySymbol, DayPrediction, Favorite, Exchange
+
+
+class ExchangeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Exchange
+        fields = "__all__"
 
 
 class SymbolSerializer(serializers.ModelSerializer):
+    exchange = ExchangeSerializer(read_only=True)
+
     class Meta:
         model = Symbol
         fields = "__all__"
