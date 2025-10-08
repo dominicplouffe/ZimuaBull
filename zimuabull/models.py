@@ -227,17 +227,26 @@ class DaySymbol(models.Model):
 
             return ema
 
-        # Calculate fast and slow EMAs
-        fast_ema = calculate_ema(closes, fast)
-        slow_ema = calculate_ema(closes, slow)
+        # Calculate MACD line for all historical data points
+        # We need to calculate MACD values for the signal period
+        macd_values = []
 
-        # MACD line
-        macd_line = fast_ema - slow_ema
+        # Start calculating MACD once we have enough data for the slow EMA
+        for i in range(slow, len(closes)):
+            prices_subset = closes[:i+1]
+            fast_ema = calculate_ema(prices_subset, fast)
+            slow_ema = calculate_ema(prices_subset, slow)
+            macd_values.append(fast_ema - slow_ema)
 
-        # For signal line, we need MACD values over signal period
-        # This is simplified - in production you'd want to calculate signal from all MACD values
-        # For now, using MACD line itself as approximation
-        signal_line = macd_line  # Simplified - should be EMA of MACD values
+        # We need at least 'signal' MACD values to calculate the signal line
+        if len(macd_values) < signal:
+            return None, None, None
+
+        # Get the final MACD line value (for the target date)
+        macd_line = macd_values[-1]
+
+        # Calculate signal line as EMA of MACD values
+        signal_line = calculate_ema(macd_values, signal)
 
         # Histogram
         histogram = macd_line - signal_line
@@ -301,7 +310,8 @@ class Portfolio(models.Model):
         from decimal import Decimal
         total = Decimal('0')
         for holding in self.holdings.filter(status='ACTIVE'):
-            current_price = Decimal(str(holding.symbol.last_close))
+            # Use latest_price if available, otherwise fall back to last_close
+            current_price = holding.symbol.latest_price if holding.symbol.latest_price else Decimal(str(holding.symbol.last_close))
             total += current_price * holding.quantity
         return float(total)
 

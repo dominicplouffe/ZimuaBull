@@ -109,62 +109,62 @@ class Command(BaseCommand):
             return
 
         # EXAMPLE: Using yfinance (uncomment and install: pip install yfinance)
-        # import yfinance as yf
-        #
-        # total_records = 0
-        #
-        # for index in indices:
-        #     self.stdout.write(f"\nFetching data for {index.name} ({index.symbol})...")
-        #
-        #     try:
-        #         ticker = yf.Ticker(index.symbol)
-        #
-        #         # Fetch historical data
-        #         end_date = datetime.now()
-        #         start_date = end_date - timedelta(days=days)
-        #
-        #         hist = ticker.history(start=start_date, end=end_date)
-        #
-        #         records_created = 0
-        #         records_updated = 0
-        #
-        #         for date, row in hist.iterrows():
-        #             date_obj = date.date()
-        #
-        #             # Create or update
-        #             data, created = MarketIndexData.objects.update_or_create(
-        #                 index=index,
-        #                 date=date_obj,
-        #                 defaults={
-        #                     'open': float(row['Open']),
-        #                     'high': float(row['High']),
-        #                     'low': float(row['Low']),
-        #                     'close': float(row['Close']),
-        #                     'volume': int(row['Volume']) if row['Volume'] > 0 else None,
-        #                 }
-        #             )
-        #
-        #             if created:
-        #                 records_created += 1
-        #             else:
-        #                 records_updated += 1
-        #
-        #         total_records += records_created + records_updated
-        #         self.stdout.write(self.style.SUCCESS(
-        #             f"  {index.symbol}: {records_created} created, {records_updated} updated"
-        #         ))
-        #
-        #     except Exception as e:
-        #         self.stdout.write(self.style.ERROR(f"  Error fetching {index.symbol}: {e}"))
-        #
-        # self.stdout.write(self.style.SUCCESS(f"\nCompleted! {total_records} total records processed"))
+        import yfinance as yf
+        
+        total_records = 0
+        
+        for index in indices:
+            self.stdout.write(f"\nFetching data for {index.name} ({index.symbol})...")
+        
+            try:
+                ticker = yf.Ticker(index.symbol)
+        
+                # Fetch historical data
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+        
+                hist = ticker.history(start=start_date, end=end_date)
+        
+                records_created = 0
+                records_updated = 0
+        
+                for date, row in hist.iterrows():
+                    date_obj = date.date()
+        
+                    # Create or update
+                    data, created = MarketIndexData.objects.update_or_create(
+                        index=index,
+                        date=date_obj,
+                        defaults={
+                            'open': float(row['Open']),
+                            'high': float(row['High']),
+                            'low': float(row['Low']),
+                            'close': float(row['Close']),
+                            'volume': int(row['Volume']) if row['Volume'] > 0 else None,
+                        }
+                    )
+        
+                    if created:
+                        records_created += 1
+                    else:
+                        records_updated += 1
+        
+                total_records += records_created + records_updated
+                self.stdout.write(self.style.SUCCESS(
+                    f"  {index.symbol}: {records_created} created, {records_updated} updated"
+                ))
+        
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"  Error fetching {index.symbol}: {e}"))
+        
+        self.stdout.write(self.style.SUCCESS(f"\nCompleted! {total_records} total records processed"))
 
-        self.stdout.write("\nExample manual population:")
-        self.stdout.write("from zimuabull.models import MarketIndex, MarketIndexData")
-        self.stdout.write("from datetime import date")
-        self.stdout.write("index = MarketIndex.objects.get(symbol='^GSPC')")
-        self.stdout.write("MarketIndexData.objects.create(")
-        self.stdout.write("    index=index,")
-        self.stdout.write("    date=date.today(),")
-        self.stdout.write("    open=5000.0, high=5050.0, low=4980.0, close=5020.0, volume=1000000")
-        self.stdout.write(")")
+        # self.stdout.write("\nExample manual population:")
+        # self.stdout.write("from zimuabull.models import MarketIndex, MarketIndexData")
+        # self.stdout.write("from datetime import date")
+        # self.stdout.write("index = MarketIndex.objects.get(symbol='^GSPC')")
+        # self.stdout.write("MarketIndexData.objects.create(")
+        # self.stdout.write("    index=index,")
+        # self.stdout.write("    date=date.today(),")
+        # self.stdout.write("    open=5000.0, high=5050.0, low=4980.0, close=5020.0, volume=1000000")
+        # self.stdout.write(")")
