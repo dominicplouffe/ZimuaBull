@@ -68,7 +68,7 @@ def recalculate_predictions_for_symbol(symbol_id):
 
     except Symbol.DoesNotExist:
         logger.error(f"Symbol with id {symbol_id} not found")
-        return f"Symbol not found"
+        return "Symbol not found"
     except Exception as e:
         logger.error(f"Error recalculating predictions for symbol {symbol_id}: {e}")
         return f"Error: {e}"

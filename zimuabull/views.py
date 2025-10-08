@@ -1,23 +1,35 @@
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, serializers as rest_serializers
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Symbol, DaySymbol, DayPrediction, Favorite, Exchange, DayPredictionChoice, DaySymbolChoice
+from .models import (
+    Symbol, DaySymbol, DayPrediction, Favorite, Exchange,
+    DayPredictionChoice, DaySymbolChoice, Portfolio, PortfolioHolding, PortfolioSnapshot,
+    Conversation, ConversationMessage, SignalHistory, MarketIndex, MarketIndexData,
+    DayTradingRecommendation, PortfolioTransaction
+)
 from .serializers import (
     SymbolSerializer,
     DaySymbolSerializer,
     DayPredictionSerializer,
     FavoriteSerializer,
     ExchangeSerializer,
+    PortfolioSerializer,
+    PortfolioSummarySerializer,
+    PortfolioHoldingSerializer,
+    PortfolioSnapshotSerializer,
 )
 from django.contrib.auth.decorators import login_required
 from django.utils.decorators import method_decorator
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
-from django.db.models import Count, Q, Max, F
+from django.db.models import Count, Q
 from django.db import models
-from datetime import date
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 
 class DaySymbolPagination(PageNumberPagination):
@@ -391,15 +403,20 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
         if prediction_type not in [DayPredictionChoice.POSITIVE, DayPredictionChoice.NEGATIVE, DayPredictionChoice.NEUTRAL]:
             return Symbol.objects.none()
 
-        # Get symbols that have predictions with the specified type
-        # We want the latest prediction for each symbol
-        symbol_ids = DayPrediction.objects.filter(
-            prediction=prediction_type
-        ).values('symbol_id').annotate(
-            latest_date=Max('date')
+        # Get the latest prediction for each symbol
+        from django.db.models import Subquery, OuterRef
+
+        latest_predictions = DayPrediction.objects.filter(
+            symbol=OuterRef('pk')
+        ).order_by('-date')
+
+        # Get symbols where the latest prediction matches the requested type
+        symbol_ids = Symbol.objects.annotate(
+            latest_prediction=Subquery(latest_predictions.values('prediction')[:1]),
+            latest_prediction_date=Subquery(latest_predictions.values('date')[:1])
         ).filter(
-            date=F('latest_date')
-        ).values_list('symbol_id', flat=True)
+            latest_prediction=prediction_type
+        ).values_list('id', flat=True)
 
         queryset = Symbol.objects.filter(id__in=symbol_ids).select_related('exchange')
 
@@ -536,3 +553,1633 @@ class SymbolsByStatus(viewsets.ReadOnlyModelViewSet):
             )
 
         return super().list(request, *args, **kwargs)
+
+
+class PortfolioViewSet(viewsets.ModelViewSet):
+    """
+    Portfolio Management
+
+    Create and manage investment portfolios to track stock holdings.
+
+    **Authentication Required**
+
+    **Key Features:**
+    - Create multiple portfolios per user
+    - Track holdings with purchase price and date
+    - Monitor daily gains/losses
+    - Exchange-restricted portfolios (all holdings must be from same exchange)
+
+    **Endpoints:**
+    - `GET /api/portfolios/` - List user's portfolios
+    - `POST /api/portfolios/` - Create new portfolio
+    - `GET /api/portfolios/{id}/` - Get portfolio details with all holdings
+    - `PUT/PATCH /api/portfolios/{id}/` - Update portfolio
+    - `DELETE /api/portfolios/{id}/` - Delete portfolio
+    - `GET /api/portfolios/{id}/performance/` - Get detailed performance metrics
+    - `GET /api/portfolios/{id}/top-performers/` - Get best/worst performing holdings
+    - `GET /api/portfolios/{id}/snapshots/` - Get historical snapshots
+
+    **Example Create:**
+    ```json
+    {
+        "name": "Tech Growth Portfolio",
+        "description": "Long-term tech investments",
+        "exchange": 1,
+        "initial_balance": 10000
+    }
+    ```
+    """
+    permission_classes = [IsAuthenticated]
+    pagination_class = DaySymbolPagination
+
+    def get_queryset(self):
+        return Portfolio.objects.filter(user=self.request.user).prefetch_related('holdings__symbol__exchange')
+
+    def get_serializer_class(self):
+        from .serializers_transactions import PortfolioWithCashSerializer
+        if self.action == 'list':
+            return PortfolioSummarySerializer
+        elif self.action in ['create', 'update', 'partial_update']:
+            return PortfolioWithCashSerializer
+        return PortfolioSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+    @action(detail=True, methods=['get'])
+    def performance(self, request, pk=None):
+        """
+        Get detailed performance metrics for a portfolio
+
+        Returns comprehensive analytics including sector allocation,
+        best/worst performers, and risk metrics.
+        """
+        portfolio = self.get_object()
+        active_holdings = portfolio.holdings.filter(status='ACTIVE')
+
+        # Calculate performance metrics
+        total_invested = float(portfolio.total_invested())
+        current_value = float(portfolio.current_value())
+        total_gain_loss = current_value - total_invested
+        total_gain_loss_percent = (total_gain_loss / total_invested * 100) if total_invested > 0 else 0
+
+        # Per-holding analysis
+        holdings_data = []
+        for holding in active_holdings:
+            holdings_data.append({
+                'symbol': holding.symbol.symbol,
+                'exchange': holding.symbol.exchange.code,
+                'quantity': float(holding.quantity),
+                'purchase_price': float(holding.purchase_price),
+                'current_price': float(holding.symbol.last_close),
+                'cost_basis': holding.cost_basis(),
+                'current_value': holding.current_value(),
+                'gain_loss': holding.gain_loss(),
+                'gain_loss_percent': holding.gain_loss_percent(),
+                'days_held': holding.days_held(),
+                'weight': (holding.current_value() / current_value * 100) if current_value > 0 else 0
+            })
+
+        # Sort by performance
+        holdings_data.sort(key=lambda x: x['gain_loss_percent'], reverse=True)
+
+        return Response({
+            'portfolio_id': portfolio.id,
+            'portfolio_name': portfolio.name,
+            'total_invested': total_invested,
+            'current_value': current_value,
+            'total_gain_loss': total_gain_loss,
+            'total_gain_loss_percent': round(total_gain_loss_percent, 2),
+            'holdings_count': active_holdings.count(),
+            'holdings': holdings_data,
+            'best_performer': holdings_data[0] if holdings_data else None,
+            'worst_performer': holdings_data[-1] if holdings_data else None,
+        })
+
+    @action(detail=True, methods=['get'])
+    def top_performers(self, request, pk=None):
+        """
+        Get top 5 and bottom 5 performing holdings
+
+        Returns best and worst performers by percentage gain/loss
+        """
+        portfolio = self.get_object()
+        active_holdings = list(portfolio.holdings.filter(status='ACTIVE'))
+
+        # Sort by gain/loss percentage
+        sorted_holdings = sorted(active_holdings, key=lambda h: h.gain_loss_percent(), reverse=True)
+
+        def serialize_holding(holding):
+            return {
+                'id': holding.id,
+                'symbol': holding.symbol.symbol,
+                'exchange': holding.symbol.exchange.code,
+                'quantity': float(holding.quantity),
+                'purchase_price': float(holding.purchase_price),
+                'current_price': float(holding.symbol.last_close),
+                'gain_loss': holding.gain_loss(),
+                'gain_loss_percent': round(holding.gain_loss_percent(), 2),
+                'days_held': holding.days_held()
+            }
+
+        top_5 = [serialize_holding(h) for h in sorted_holdings[:5]]
+        bottom_5 = [serialize_holding(h) for h in sorted_holdings[-5:]]
+
+        return Response({
+            'top_performers': top_5,
+            'worst_performers': bottom_5
+        })
+
+    @action(detail=True, methods=['get'])
+    def snapshots(self, request, pk=None):
+        """
+        Get historical performance snapshots
+
+        Query Parameters:
+        - days: Number of days to retrieve (default: 30, max: 365)
+        """
+        portfolio = self.get_object()
+        days = min(int(request.query_params.get('days', 30)), 365)
+
+        snapshots = portfolio.snapshots.all()[:days]
+        serializer = PortfolioSnapshotSerializer(snapshots, many=True)
+
+        return Response(serializer.data)
+
+
+class PortfolioHoldingViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Portfolio Holdings - READ ONLY
+
+    View current holdings within portfolios.
+    Holdings are automatically calculated from transactions.
+
+    **Use /api/transactions/ to BUY or SELL stocks**
+
+    **Authentication Required**
+
+    **Key Features:**
+    - View current holdings derived from transaction history
+    - Track average cost basis
+    - Track performance per holding
+    - Update stop loss and target prices
+
+    **Endpoints:**
+    - `GET /api/holdings/` - List all user's holdings (filterable by portfolio)
+    - `GET /api/holdings/{id}/` - Get holding details
+    - `PATCH /api/holdings/{id}/` - Update stop loss/target price only
+
+    **Query Parameters:**
+    - `portfolio`: Filter by portfolio ID
+    - `status`: Filter by status (ACTIVE)
+    - `symbol`: Filter by symbol ID
+
+    **To add/sell holdings, use /api/transactions/**
+    """
+    permission_classes = [IsAuthenticated]
+    pagination_class = DaySymbolPagination
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['portfolio', 'status', 'symbol']
+    ordering_fields = ['first_purchase_date', 'quantity']
+    ordering = ['-first_purchase_date']
+    serializer_class = PortfolioHoldingSerializer
+
+    def get_queryset(self):
+        return PortfolioHolding.objects.filter(
+            portfolio__user=self.request.user
+        ).select_related('portfolio', 'symbol__exchange')
+
+    def partial_update(self, request, *args, **kwargs):
+        """Allow updating stop_loss_price and target_price only"""
+        # Only allow updating these fields
+        allowed_fields = ['stop_loss_price', 'target_price']
+        for key in request.data.keys():
+            if key not in allowed_fields:
+                return Response(
+                    {"error": f"Cannot update field '{key}'. Only stop_loss_price and target_price can be updated. Use /api/transactions/ to buy/sell."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        return super().partial_update(request, *args, **kwargs)
+
+    # Removed sell() action - use /api/transactions/ with transaction_type='SELL' instead
+
+
+class PortfolioSummary(APIView):
+    """
+    Portfolio Summary Across All User Portfolios
+
+    Get aggregated statistics across all user's portfolios.
+
+    **Authentication Required**
+
+    **Returns:**
+    ```json
+    {
+        "total_portfolios": 3,
+        "active_portfolios": 2,
+        "total_invested": 50000.00,
+        "total_current_value": 55000.00,
+        "total_gain_loss": 5000.00,
+        "total_gain_loss_percent": 10.00,
+        "total_holdings": 25,
+        "portfolios": [...]
+    }
+    ```
+
+    **Example:** `/api/portfolio-summary/`
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        portfolios = Portfolio.objects.filter(user=request.user)
+
+        total_invested = sum(p.total_invested() for p in portfolios)
+        total_current_value = sum(p.current_value() for p in portfolios)
+        total_gain_loss = total_current_value - total_invested
+        total_gain_loss_percent = (total_gain_loss / total_invested * 100) if total_invested > 0 else 0
+
+        total_holdings = sum(p.holdings.filter(status='ACTIVE').count() for p in portfolios)
+
+        portfolio_summaries = PortfolioSummarySerializer(portfolios, many=True).data
+
+        return Response({
+            'total_portfolios': portfolios.count(),
+            'active_portfolios': portfolios.filter(is_active=True).count(),
+            'total_invested': float(total_invested),
+            'total_current_value': float(total_current_value),
+            'total_gain_loss': float(total_gain_loss),
+            'total_gain_loss_percent': round(total_gain_loss_percent, 2),
+            'total_holdings': total_holdings,
+            'portfolios': portfolio_summaries
+        })
+
+
+class RecalculateSignals(APIView):
+    """
+    Recalculate Trading Signals
+
+    Manually trigger recalculation of trading signals for symbols.
+
+    **Query Parameters:**
+    - `exchange`: Optional - Recalculate only for specific exchange (e.g., TSE, NASDAQ)
+    - `symbol`: Optional - Recalculate for specific symbol (requires exchange parameter)
+
+    **Returns:**
+    ```json
+    {
+        "total_processed": 150,
+        "updated": 42,
+        "errors": 0,
+        "signal_distribution": {
+            "STRONG_BUY": 5,
+            "BUY": 25,
+            "HOLD": 80,
+            "SELL": 20,
+            "STRONG_SELL": 3,
+            "NA": 17
+        }
+    }
+    ```
+
+    **Examples:**
+    - All symbols: `/api/recalculate-signals/`
+    - Specific exchange: `/api/recalculate-signals/?exchange=TSE`
+    - Specific symbol: `/api/recalculate-signals/?symbol=AAPL&exchange=NASDAQ`
+    """
+
+    def post(self, request):
+        exchange_code = request.query_params.get('exchange')
+        symbol_ticker = request.query_params.get('symbol')
+
+        # Build queryset
+        queryset = Symbol.objects.all()
+
+        if exchange_code:
+            queryset = queryset.filter(exchange__code=exchange_code)
+
+        if symbol_ticker:
+            if not exchange_code:
+                return Response(
+                    {"error": "symbol parameter requires exchange parameter"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            queryset = queryset.filter(symbol=symbol_ticker)
+
+        total_symbols = queryset.count()
+
+        if total_symbols == 0:
+            return Response(
+                {"error": "No symbols found matching criteria"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        updated_count = 0
+        error_count = 0
+        signal_counts = {
+            'STRONG_BUY': 0,
+            'BUY': 0,
+            'HOLD': 0,
+            'SELL': 0,
+            'STRONG_SELL': 0,
+            'NA': 0
+        }
+
+        for symbol in queryset:
+            try:
+                old_signal = symbol.obv_status
+                new_signal = symbol.update_trading_signal()
+
+                if old_signal != new_signal:
+                    updated_count += 1
+
+                signal_counts[new_signal] = signal_counts.get(new_signal, 0) + 1
+
+            except Exception:
+                error_count += 1
+
+        return Response({
+            'total_processed': total_symbols,
+            'updated': updated_count,
+            'errors': error_count,
+            'signal_distribution': signal_counts
+        })
+
+
+class SignalExplanation(APIView):
+    """
+    Get Trading Signal Explanation
+
+    Get detailed explanation of why a symbol has its current trading signal.
+
+    **URL Parameters:**
+    - `symbol`: Stock symbol (e.g., AAPL)
+    - `exchange`: Exchange code (e.g., NASDAQ)
+
+    **Returns:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "exchange": "NASDAQ",
+        "signal": "BUY",
+        "prediction": "POSITIVE",
+        "obv_signal_sum": 2,
+        "trend_angle": 12.5,
+        "price_bucket": "UP",
+        "accuracy": 0.75,
+        "explanation": "Prediction: POSITIVE | OBV Signal Sum: 2 | 30-day Trend: 12.50° | Price Bucket: UP | Accuracy: 75.0%"
+    }
+    ```
+
+    **Example:** `/api/signal-explanation/?symbol=AAPL&exchange=NASDAQ`
+    """
+
+    def get(self, request):
+        symbol_ticker = request.query_params.get('symbol')
+        exchange_code = request.query_params.get('exchange')
+
+        if not symbol_ticker or not exchange_code:
+            return Response(
+                {"error": "Both 'symbol' and 'exchange' parameters are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
+        except Symbol.DoesNotExist:
+            return Response(
+                {"error": f"Symbol {symbol_ticker} not found on exchange {exchange_code}"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        explanation_data = symbol.get_signal_explanation()
+        explanation_data['symbol'] = symbol.symbol
+        explanation_data['exchange'] = symbol.exchange.code
+
+        return Response(explanation_data)
+
+
+class SymbolSearch(viewsets.ReadOnlyModelViewSet):
+    """
+    Search Symbols by Ticker or Name
+
+    Search for symbols by partial match on ticker symbol or company name.
+    Returns matching symbols with their current metrics.
+
+    **Read-only endpoint** - only GET requests are allowed.
+
+    **Required Query Parameters:**
+    - `q` or `query`: Search term (minimum 1 character)
+
+    **Optional Query Parameters:**
+    - `exchange`: Filter by exchange code (e.g., TSE, NASDAQ, NYSE)
+    - `page_size`: Number of results per page (default: 30, max: 100)
+
+    **Search Behavior:**
+    - Searches both symbol ticker and company name
+    - Case-insensitive partial matching
+    - Results ordered by: exact ticker match first, then alphabetically
+
+    **Returns:**
+    Each result includes:
+    - Symbol details (ticker, name, exchange)
+    - Current price metrics (last_open, last_close, last_volume)
+    - Technical indicators (obv_status, thirty_close_trend, close_bucket)
+    - Prediction accuracy
+
+    **Examples:**
+    - Search by ticker: `/api/symbol-search/?q=AAPL`
+    - Search by partial name: `/api/symbol-search/?q=apple`
+    - Filter by exchange: `/api/symbol-search/?q=bank&exchange=TSE`
+    - Limit results: `/api/symbol-search/?q=tech&page_size=10`
+    """
+    serializer_class = SymbolSerializer
+    pagination_class = DaySymbolPagination
+
+    def get_queryset(self):
+        query = self.request.query_params.get('q') or self.request.query_params.get('query')
+        exchange_code = self.request.query_params.get('exchange')
+
+        if not query:
+            return Symbol.objects.none()
+
+        # Search by symbol (ticker) or name
+        queryset = Symbol.objects.filter(
+            Q(symbol__icontains=query) | Q(name__icontains=query)
+        ).select_related('exchange')
+
+        # Filter by exchange if provided
+        if exchange_code:
+            queryset = queryset.filter(exchange__code=exchange_code)
+
+        # Order by: exact ticker matches first, then alphabetically
+        from django.db.models import Case, When, Value, IntegerField
+        queryset = queryset.annotate(
+            exact_match=Case(
+                When(symbol__iexact=query, then=Value(0)),
+                When(symbol__istartswith=query, then=Value(1)),
+                default=Value(2),
+                output_field=IntegerField()
+            )
+        ).order_by('exact_match', 'symbol')
+
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        query = request.query_params.get('q') or request.query_params.get('query')
+
+        if not query:
+            return Response(
+                {"error": "Search query parameter 'q' or 'query' is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(query) < 1:
+            return Response(
+                {"error": "Search query must be at least 1 character"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Override page_size max for search
+        page_size = request.query_params.get('page_size')
+        if page_size:
+            try:
+                page_size_int = int(page_size)
+                if page_size_int > 100:
+                    return Response(
+                        {"error": "Maximum page_size is 100 for search results"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except ValueError:
+                pass
+
+        return super().list(request, *args, **kwargs)
+
+
+class LLMContext(APIView):
+    """
+    Get LLM-Formatted Context Data
+
+    Returns stock market data formatted for LLM consumption (Claude, ChatGPT, etc.).
+    Provides natural language summaries and structured data.
+
+    **Query Parameters:**
+    - `symbol`: Stock symbol (requires `exchange`)
+    - `exchange`: Exchange code
+    - `include_history`: Set to "true" to include historical prices (enables moving averages, etc.)
+    - `history_days`: Number of days of history (default: 30, max: 365)
+    - `portfolio_ids`: Comma-separated portfolio IDs (e.g., "1,2,3")
+    - `include_market_overview`: Set to "true" to include market overview
+    - `exchange_filter`: Exchange code for market overview
+
+    **Examples:**
+    - Symbol with history: `/api/llm-context/?symbol=AAPL&exchange=NASDAQ&include_history=true&history_days=50`
+    - Portfolio context: `/api/llm-context/?portfolio_ids=1,2`
+    - Market overview: `/api/llm-context/?include_market_overview=true&exchange_filter=TSE`
+    - Combined: `/api/llm-context/?symbol=AAPL&exchange=NASDAQ&include_history=true&portfolio_ids=1`
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .llm_helpers import (
+            format_symbol_for_llm,
+            format_portfolio_for_llm,
+            format_market_overview_for_llm,
+            build_system_prompt
+        )
+
+        context = {
+            "system_prompt": build_system_prompt(),
+            "data": {}
+        }
+
+        # Symbol data
+        symbol_ticker = request.query_params.get('symbol')
+        exchange_code = request.query_params.get('exchange')
+        include_history = request.query_params.get('include_history') == 'true'
+        history_days = int(request.query_params.get('history_days', 30))
+
+        if symbol_ticker and exchange_code:
+            try:
+                symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
+                context['data']['symbol'] = format_symbol_for_llm(
+                    symbol,
+                    include_history=include_history,
+                    history_days=history_days
+                )
+            except Symbol.DoesNotExist:
+                context['data']['symbol'] = {"error": f"Symbol {symbol_ticker} not found on {exchange_code}"}
+
+        # Portfolio data
+        portfolio_ids_str = request.query_params.get('portfolio_ids')
+        if portfolio_ids_str:
+            try:
+                portfolio_ids = [int(pid) for pid in portfolio_ids_str.split(',')]
+                portfolios = Portfolio.objects.filter(user=request.user, id__in=portfolio_ids)
+                context['data']['portfolios'] = [format_portfolio_for_llm(p) for p in portfolios]
+            except (ValueError, TypeError):
+                context['data']['portfolios'] = {"error": "Invalid portfolio_ids format"}
+
+        # Market overview
+        if request.query_params.get('include_market_overview') == 'true':
+            exchange_filter = request.query_params.get('exchange_filter')
+            context['data']['market_overview'] = format_market_overview_for_llm(exchange_filter)
+
+        return Response(context)
+
+
+class ChatWithLLM(APIView):
+    """
+    Chat Interface for LLM Integration
+
+    Send messages and get context-aware responses. This endpoint prepares data
+    for your LLM integration (you'll need to call Claude/ChatGPT API separately).
+
+    **Authentication Required**
+
+    **POST Body:**
+    ```json
+    {
+        "message": "What stocks should I buy today?",
+        "conversation_id": "uuid",  // optional, for continuing conversations
+        "context": {
+            "portfolio_ids": [1, 2],  // optional
+            "symbol": "AAPL",  // optional
+            "exchange": "NASDAQ",  // optional (required if symbol provided)
+            "include_market_overview": true  // optional
+        }
+    }
+    ```
+
+    **Returns:**
+    ```json
+    {
+        "conversation_id": 1,
+        "prepared_context": {
+            "system_prompt": "You are ZimuaBull AI...",
+            "conversation_history": [...],
+            "current_data": {...}
+        },
+        "message_saved": true
+    }
+    ```
+
+    **Note:** This endpoint prepares the context and saves the conversation.
+    You need to call your LLM API (Claude/ChatGPT) with the prepared_context,
+    then POST the response back using the `/api/chat-response/` endpoint.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from .llm_helpers import format_conversation_context
+
+        message = request.data.get('message')
+        conversation_id = request.data.get('conversation_id')
+        context_params = request.data.get('context', {})
+
+        if not message:
+            return Response(
+                {"error": "Message is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get or create conversation
+        if conversation_id:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+            except Conversation.DoesNotExist:
+                return Response(
+                    {"error": "Conversation not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            conversation = Conversation.objects.create(
+                user=request.user,
+                title=message[:100]  # Use first message as title
+            )
+
+        # Save user message
+        ConversationMessage.objects.create(
+            conversation=conversation,
+            role='user',
+            content=message,
+            context_data=context_params
+        )
+
+        # Build context for LLM
+        llm_context = format_conversation_context(
+            user=request.user,
+            query=message,
+            **context_params
+        )
+
+        # Get conversation history
+        history = []
+        for msg in conversation.messages.order_by('created_at'):
+            history.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+
+        prepared_context = {
+            "system_prompt": llm_context['system_prompt'],
+            "conversation_history": history,
+            "current_data": llm_context.get('user_context', {}),
+            "timestamp": llm_context['timestamp']
+        }
+
+        return Response({
+            "conversation_id": conversation.id,
+            "prepared_context": prepared_context,
+            "message_saved": True,
+            "note": "Use prepared_context to call your LLM API, then POST response to /api/chat-response/"
+        })
+
+
+class SaveChatResponse(APIView):
+    """
+    Save LLM Response to Conversation
+
+    After getting a response from your LLM (Claude/ChatGPT), save it to the conversation.
+
+    **Authentication Required**
+
+    **POST Body:**
+    ```json
+    {
+        "conversation_id": 1,
+        "response": "Based on your portfolio analysis..."
+    }
+    ```
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        conversation_id = request.data.get('conversation_id')
+        response = request.data.get('response')
+
+        if not conversation_id or not response:
+            return Response(
+                {"error": "conversation_id and response are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+        except Conversation.DoesNotExist:
+            return Response(
+                {"error": "Conversation not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Save assistant response
+        ConversationMessage.objects.create(
+            conversation=conversation,
+            role='assistant',
+            content=response
+        )
+
+        return Response({
+            "success": True,
+            "conversation_id": conversation.id,
+            "message_count": conversation.messages.count()
+        })
+
+
+class ConversationList(APIView):
+    """
+    List User's Conversations
+
+    Get all conversations for the authenticated user.
+
+    **Authentication Required**
+
+    **Returns:**
+    ```json
+    [
+        {
+            "id": 1,
+            "title": "Portfolio analysis",
+            "message_count": 5,
+            "created_at": "2025-01-07T10:00:00Z",
+            "updated_at": "2025-01-07T10:30:00Z"
+        }
+    ]
+    ```
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        conversations = Conversation.objects.filter(user=request.user)
+
+        data = []
+        for conv in conversations:
+            data.append({
+                "id": conv.id,
+                "title": conv.title,
+                "message_count": conv.messages.count(),
+                "created_at": conv.created_at,
+                "updated_at": conv.updated_at
+            })
+
+        return Response(data)
+
+
+class ConversationDetail(APIView):
+    """
+    Get Conversation History
+
+    Retrieve full conversation history with all messages.
+
+    **Authentication Required**
+
+    **Returns:**
+    ```json
+    {
+        "id": 1,
+        "title": "Portfolio analysis",
+        "messages": [
+            {
+                "role": "user",
+                "content": "What stocks should I buy?",
+                "created_at": "2025-01-07T10:00:00Z"
+            },
+            {
+                "role": "assistant",
+                "content": "Based on current market...",
+                "created_at": "2025-01-07T10:00:05Z"
+            }
+        ]
+    }
+    ```
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, conversation_id):
+        try:
+            conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+        except Conversation.DoesNotExist:
+            return Response(
+                {"error": "Conversation not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        messages = []
+        for msg in conversation.messages.order_by('created_at'):
+            messages.append({
+                "role": msg.role,
+                "content": msg.content,
+                "created_at": msg.created_at
+            })
+
+        return Response({
+            "id": conversation.id,
+            "title": conversation.title,
+            "created_at": conversation.created_at,
+            "updated_at": conversation.updated_at,
+            "messages": messages
+        })
+
+
+class CompareSymbols(APIView):
+    """
+    Compare Multiple Symbols Side-by-Side
+
+    Compare 2-10 symbols across key metrics for LLM analysis.
+
+    **Query Parameters:**
+    - `symbols`: Comma-separated list of "SYMBOL:EXCHANGE" pairs (e.g., "AAPL:NASDAQ,MSFT:NASDAQ,GOOGL:NASDAQ")
+    - `include_history`: Set to "true" to include price history (default: false)
+    - `history_days`: Days of history if include_history=true (default: 30)
+
+    **Returns:**
+    ```json
+    {
+        "comparison_summary": "Comparing 3 symbols: AAPL (BUY, $178.25), MSFT (HOLD, $370.50)...",
+        "symbols": [
+            {
+                "symbol": "AAPL",
+                "name": "Apple Inc.",
+                "current_price": 178.25,
+                "signal": "BUY",
+                "sector": "Technology",
+                ...
+            }
+        ],
+        "comparative_analysis": {
+            "highest_price": {"symbol": "MSFT", "price": 370.50},
+            "strongest_signal": ["AAPL"],
+            "best_performer_30d": {"symbol": "NVDA", "change_percent": 15.3},
+            "sector_breakdown": {"Technology": 3}
+        }
+    }
+    ```
+
+    **Examples:**
+    - `/api/compare-symbols/?symbols=AAPL:NASDAQ,MSFT:NASDAQ,GOOGL:NASDAQ`
+    - `/api/compare-symbols/?symbols=AAPL:NASDAQ,MSFT:NASDAQ&include_history=true&history_days=50`
+    """
+
+    def get(self, request):
+        from .llm_helpers import format_symbol_for_llm
+
+        symbols_param = request.query_params.get('symbols')
+        include_history = request.query_params.get('include_history') == 'true'
+        history_days = int(request.query_params.get('history_days', 30))
+
+        if not symbols_param:
+            return Response(
+                {"error": "symbols parameter is required (format: SYMBOL:EXCHANGE,SYMBOL:EXCHANGE)"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Parse symbols
+        symbol_pairs = []
+        for pair in symbols_param.split(','):
+            parts = pair.strip().split(':')
+            if len(parts) != 2:
+                return Response(
+                    {"error": f"Invalid format for '{pair}'. Use SYMBOL:EXCHANGE"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            symbol_pairs.append((parts[0].upper(), parts[1].upper()))
+
+        if len(symbol_pairs) > 10:
+            return Response(
+                {"error": "Maximum 10 symbols can be compared at once"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Fetch and format symbols
+        symbols_data = []
+        for symbol_ticker, exchange_code in symbol_pairs:
+            try:
+                symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
+                symbol_data = format_symbol_for_llm(symbol, include_history=include_history, history_days=history_days)
+                symbols_data.append(symbol_data)
+            except Symbol.DoesNotExist:
+                symbols_data.append({
+                    "symbol": symbol_ticker,
+                    "exchange": exchange_code,
+                    "error": "Not found"
+                })
+
+        # Build comparison summary
+        valid_symbols = [s for s in symbols_data if 'error' not in s]
+
+        if not valid_symbols:
+            return Response({
+                "error": "None of the requested symbols were found",
+                "symbols": symbols_data
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Comparative analysis
+        signal_ranking = {'STRONG_BUY': 5, 'BUY': 4, 'HOLD': 3, 'SELL': 2, 'STRONG_SELL': 1, 'NA': 0}
+
+        # Find strongest and weakest signals
+        all_signals = [s['signal'] for s in valid_symbols]
+        strongest_signal_value = max((signal_ranking.get(sig, 0) for sig in all_signals))
+        weakest_signal_value = min((signal_ranking.get(sig, 0) for sig in all_signals))
+
+        comparative_analysis = {
+            "highest_price": max(valid_symbols, key=lambda s: s['current_price']),
+            "lowest_price": min(valid_symbols, key=lambda s: s['current_price']),
+            "strongest_signal": [s['symbol'] for s in valid_symbols if signal_ranking.get(s['signal'], 0) == strongest_signal_value],
+            "weakest_signal": [s['symbol'] for s in valid_symbols if signal_ranking.get(s['signal'], 0) == weakest_signal_value],
+            "steepest_uptrend": max(valid_symbols, key=lambda s: s['trend_angle']) if valid_symbols else None,
+            "steepest_downtrend": min(valid_symbols, key=lambda s: s['trend_angle']) if valid_symbols else None,
+        }
+
+        # Sector breakdown
+        sectors = {}
+        for s in valid_symbols:
+            sector = s.get('sector', 'Unknown')
+            sectors[sector] = sectors.get(sector, 0) + 1
+        comparative_analysis['sector_breakdown'] = sectors
+
+        # Performance comparison (if history included)
+        if include_history:
+            performance = []
+            for s in valid_symbols:
+                if 'price_statistics' in s:
+                    performance.append({
+                        'symbol': s['symbol'],
+                        'change_percent': s['price_statistics']['change_percent']
+                    })
+            if performance:
+                performance.sort(key=lambda x: x['change_percent'], reverse=True)
+                comparative_analysis['performance_ranking'] = performance
+                comparative_analysis['best_performer'] = performance[0] if performance else None
+                comparative_analysis['worst_performer'] = performance[-1] if performance else None
+
+        # Summary
+        summary_parts = [f"Comparing {len(valid_symbols)} symbols:"]
+        for s in valid_symbols[:3]:  # First 3 for summary
+            summary_parts.append(f"{s['symbol']} ({s['signal']}, ${s['current_price']:.2f})")
+        if len(valid_symbols) > 3:
+            summary_parts.append(f"and {len(valid_symbols) - 3} more")
+
+        return Response({
+            "comparison_summary": " ".join(summary_parts),
+            "symbols": symbols_data,
+            "comparative_analysis": comparative_analysis,
+            "count": len(valid_symbols)
+        })
+
+
+class BacktestStrategy(APIView):
+    """
+    Backtest a trading strategy on historical data.
+
+    Answers "what-if" questions like:
+    - "What if I bought AAPL 30 days ago?"
+    - "What would my return be if I followed BUY signals for 90 days?"
+
+    Query params:
+    - symbol: Symbol ticker (required)
+    - exchange: Exchange code (required)
+    - days_ago: How many days back to start (default 30)
+    - strategy: 'buy_hold' or 'signal_follow' (default 'buy_hold')
+    - investment: Amount to invest (default 10000)
+    """
+
+    def get(self, request):
+        symbol_ticker = request.query_params.get('symbol')
+        exchange_code = request.query_params.get('exchange')
+        days_ago = int(request.query_params.get('days_ago', 30))
+        strategy = request.query_params.get('strategy', 'buy_hold')
+        investment = float(request.query_params.get('investment', 10000))
+
+        if not symbol_ticker or not exchange_code:
+            return Response(
+                {"error": "Both symbol and exchange parameters are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get symbol
+        try:
+            exchange = Exchange.objects.get(code=exchange_code)
+            symbol = Symbol.objects.get(symbol=symbol_ticker, exchange=exchange)
+        except (Exchange.DoesNotExist, Symbol.DoesNotExist):
+            return Response(
+                {"error": f"Symbol {symbol_ticker}:{exchange_code} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Get historical data
+        start_date = datetime.now().date() - timedelta(days=days_ago)
+        historical = DaySymbol.objects.filter(
+            symbol=symbol,
+            date__gte=start_date
+        ).order_by('date')
+
+        if not historical.exists():
+            return Response(
+                {"error": f"No historical data found for the specified period"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Execute strategy
+        if strategy == 'buy_hold':
+            result = self._backtest_buy_hold(symbol, historical, investment)
+        elif strategy == 'signal_follow':
+            result = self._backtest_signal_follow(symbol, historical, investment)
+        else:
+            return Response(
+                {"error": f"Unknown strategy: {strategy}. Use 'buy_hold' or 'signal_follow'"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(result)
+
+    def _backtest_buy_hold(self, symbol, historical, investment):
+        """
+        Simple buy and hold strategy - buy at start, sell at end.
+        """
+        first_day = historical.first()
+        last_day = historical.last()
+
+        # Calculate shares purchased
+        shares = investment / first_day.close
+
+        # Calculate final value
+        final_value = shares * last_day.close
+        profit_loss = final_value - investment
+        return_pct = (profit_loss / investment) * 100
+
+        # Get any signal changes during period
+        signal_changes = SignalHistory.objects.filter(
+            symbol=symbol,
+            date__gte=first_day.date,
+            date__lte=last_day.date
+        ).count()
+
+        return {
+            "strategy": "Buy and Hold",
+            "symbol": f"{symbol.symbol}:{symbol.exchange.code}",
+            "period": {
+                "start_date": first_day.date.isoformat(),
+                "end_date": last_day.date.isoformat(),
+                "days": historical.count()
+            },
+            "investment": round(investment, 2),
+            "execution": {
+                "purchase_price": round(first_day.close, 2),
+                "purchase_date": first_day.date.isoformat(),
+                "shares_purchased": round(shares, 4),
+                "sell_price": round(last_day.close, 2),
+                "sell_date": last_day.date.isoformat()
+            },
+            "results": {
+                "final_value": round(final_value, 2),
+                "profit_loss": round(profit_loss, 2),
+                "return_percent": round(return_pct, 2),
+                "signal_changes_during_period": signal_changes
+            },
+            "summary": (
+                f"Investing ${investment:,.2f} in {symbol.symbol} on {first_day.date} "
+                f"would be worth ${final_value:,.2f} today "
+                f"({'+' if profit_loss > 0 else ''}{return_pct:.2f}% return)"
+            )
+        }
+
+    def _backtest_signal_follow(self, symbol, historical, investment):
+        """
+        Follow trading signals - buy on BUY/STRONG_BUY, sell on SELL/STRONG_SELL.
+        """
+        from decimal import Decimal
+
+        cash = Decimal(str(investment))
+        shares = Decimal('0')
+        transactions = []
+        position_open = False
+
+        for day in historical:
+            signal = day.status
+            price = Decimal(str(day.close))
+
+            # Buy signals
+            if signal in ['BUY', 'STRONG_BUY'] and not position_open and cash > 0:
+                shares_to_buy = cash / price
+                cost = shares_to_buy * price
+
+                transactions.append({
+                    "date": day.date.isoformat(),
+                    "action": "BUY",
+                    "signal": signal,
+                    "price": float(price),
+                    "shares": float(shares_to_buy),
+                    "cost": float(cost)
+                })
+
+                shares += shares_to_buy
+                cash -= cost
+                position_open = True
+
+            # Sell signals
+            elif signal in ['SELL', 'STRONG_SELL'] and position_open and shares > 0:
+                proceeds = shares * price
+
+                transactions.append({
+                    "date": day.date.isoformat(),
+                    "action": "SELL",
+                    "signal": signal,
+                    "price": float(price),
+                    "shares": float(shares),
+                    "proceeds": float(proceeds)
+                })
+
+                cash += proceeds
+                shares = Decimal('0')
+                position_open = False
+
+        # Calculate final value (liquidate any remaining position)
+        last_day = historical.last()
+        if shares > 0:
+            final_price = Decimal(str(last_day.close))
+            cash += shares * final_price
+
+        final_value = float(cash)
+        profit_loss = final_value - investment
+        return_pct = (profit_loss / investment) * 100
+
+        return {
+            "strategy": "Signal Following",
+            "symbol": f"{symbol.symbol}:{symbol.exchange.code}",
+            "period": {
+                "start_date": historical.first().date.isoformat(),
+                "end_date": historical.last().date.isoformat(),
+                "days": historical.count()
+            },
+            "investment": round(investment, 2),
+            "transactions": transactions,
+            "results": {
+                "final_value": round(final_value, 2),
+                "profit_loss": round(profit_loss, 2),
+                "return_percent": round(return_pct, 2),
+                "total_trades": len(transactions),
+                "final_position": "cash" if shares == 0 else f"{float(shares):.4f} shares"
+            },
+            "summary": (
+                f"Following trading signals for {symbol.symbol} over {historical.count()} days "
+                f"with ${investment:,.2f} investment resulted in ${final_value:,.2f} "
+                f"({'+' if profit_loss > 0 else ''}{return_pct:.2f}% return) "
+                f"with {len(transactions)} trades"
+            )
+        }
+
+
+class MarketBenchmarks(APIView):
+    """
+    Get market index data for benchmarking.
+
+    Query params:
+    - indices: Comma-separated index symbols (e.g., "^GSPC,^IXIC")
+    - days: Number of days of history (default 30)
+    """
+
+    def get(self, request):
+        indices_param = request.query_params.get('indices', '^GSPC')  # Default to S&P 500
+        days = int(request.query_params.get('days', 30))
+
+        index_symbols = [s.strip() for s in indices_param.split(',')]
+
+        results = []
+        start_date = datetime.now().date() - timedelta(days=days)
+
+        for index_symbol in index_symbols:
+            try:
+                index = MarketIndex.objects.get(symbol=index_symbol)
+
+                # Get historical data
+                historical = MarketIndexData.objects.filter(
+                    index=index,
+                    date__gte=start_date
+                ).order_by('date')
+
+                if not historical.exists():
+                    continue
+
+                first_day = historical.first()
+                last_day = historical.last()
+
+                # Calculate performance
+                price_change = last_day.close - first_day.close
+                pct_change = (price_change / first_day.close) * 100 if first_day.close != 0 else 0
+
+                results.append({
+                    "index": index.name,
+                    "symbol": index.symbol,
+                    "country": index.country,
+                    "current_value": round(last_day.close, 2),
+                    "period": {
+                        "start_date": first_day.date.isoformat(),
+                        "end_date": last_day.date.isoformat(),
+                        "start_value": round(first_day.close, 2),
+                        "end_value": round(last_day.close, 2)
+                    },
+                    "performance": {
+                        "change": round(price_change, 2),
+                        "change_percent": round(pct_change, 2)
+                    },
+                    "summary": (
+                        f"{index.name} {'+' if price_change > 0 else ''}{pct_change:.2f}% "
+                        f"over {historical.count()} days"
+                    )
+                })
+
+            except MarketIndex.DoesNotExist:
+                continue
+
+        if not results:
+            return Response(
+                {"error": "No market index data found for the specified indices"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response({
+            "benchmarks": results,
+            "count": len(results)
+        })
+
+
+class DayTradingRecommendations(APIView):
+    """
+    Generate sophisticated day trading recommendations for intraday trading.
+
+    Analyzes multiple factors to recommend 1-5 symbols most likely to increase
+    during the trading day. Designed for same-day entry and exit.
+
+    Query params:
+    - bankroll: Starting capital (default 10000)
+    - max_picks: Maximum number of recommendations (default 5)
+    - min_score: Minimum confidence score threshold (default 60)
+    - exchange: Filter by exchange code (optional)
+    """
+
+    def get(self, request):
+        from decimal import Decimal
+
+        bankroll = Decimal(str(request.query_params.get('bankroll', '10000')))
+        max_picks = int(request.query_params.get('max_picks', 5))
+        min_score = float(request.query_params.get('min_score', 60))
+        exchange_filter = request.query_params.get('exchange')
+
+        today = datetime.now().date()
+
+        # Check if we already have recommendations for today
+        existing = DayTradingRecommendation.objects.filter(recommendation_date=today)
+        if exchange_filter:
+            existing = existing.filter(symbol__exchange__code=exchange_filter)
+
+        if existing.exists():
+            return self._format_existing_recommendations(existing, bankroll)
+
+        # Generate new recommendations
+        recommendations = self._generate_recommendations(today, bankroll, max_picks, min_score, exchange_filter)
+
+        return recommendations
+
+    def _generate_recommendations(self, date, bankroll, max_picks, min_score, exchange_filter):
+        """Generate trading recommendations based on sophisticated multi-factor analysis"""
+
+        # Get symbols with recent data
+        symbols = Symbol.objects.all()
+
+        if exchange_filter:
+            symbols = symbols.filter(exchange__code=exchange_filter)
+
+        # Only consider symbols with sufficient data
+        symbols = symbols.filter(
+            accuracy__gte=0.4,  # At least 40% accuracy
+            last_volume__gt=100000  # Minimum liquidity
+        )
+
+        candidates = []
+
+        for symbol in symbols:
+            # Get latest data
+            latest_day = DaySymbol.objects.filter(symbol=symbol).order_by('-date').first()
+            if not latest_day:
+                continue
+
+            # Get latest prediction
+            latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by('-date').first()
+
+            # Calculate composite score
+            scores = self._calculate_scores(symbol, latest_day, latest_prediction)
+            total_score = sum(scores.values())
+
+            # Skip if below threshold
+            if total_score < min_score:
+                continue
+
+            # Calculate risk metrics
+            entry_price = symbol.last_close
+            target_price = entry_price * 1.02  # Conservative 2% target for day trading
+            stop_loss = entry_price * 0.985  # 1.5% stop loss
+
+            # Build reason
+            reason_parts = []
+            if scores['signal_score'] > 15:
+                reason_parts.append(f"Strong {symbol.obv_status} signal")
+            if scores['momentum_score'] > 15:
+                reason_parts.append(f"Bullish trend ({symbol.thirty_close_trend:.1f}°)")
+            if scores['prediction_score'] > 15:
+                reason_parts.append("Positive AI prediction")
+            if scores['technical_score'] > 15:
+                reason_parts.append("Strong technical setup")
+            if scores['volume_score'] > 15:
+                reason_parts.append("High volume activity")
+
+            candidates.append({
+                'symbol': symbol,
+                'total_score': total_score,
+                'scores': scores,
+                'entry_price': entry_price,
+                'target_price': target_price,
+                'stop_loss': stop_loss,
+                'reason': '; '.join(reason_parts) if reason_parts else 'Multiple factors align'
+            })
+
+        # Sort by score and take top picks
+        candidates.sort(key=lambda x: x['total_score'], reverse=True)
+        top_picks = candidates[:max_picks]
+
+        if not top_picks:
+            return Response({
+                "date": date.isoformat(),
+                "bankroll": float(bankroll),
+                "recommendations": [],
+                "message": "No symbols meet the minimum criteria today. Market conditions may not favor day trading.",
+                "analysis": {
+                    "symbols_analyzed": symbols.count(),
+                    "candidates_found": 0
+                }
+            })
+
+        # Calculate position sizing (equal weight with risk adjustment)
+        allocations = self._calculate_position_sizing(top_picks, bankroll)
+
+        # Save recommendations to database
+        recommendations = []
+        for idx, candidate in enumerate(top_picks):
+            rec = DayTradingRecommendation.objects.create(
+                symbol=candidate['symbol'],
+                recommendation_date=date,
+                rank=idx + 1,
+                confidence_score=candidate['total_score'],
+                recommended_allocation=allocations[idx],
+                entry_price=candidate['entry_price'],
+                target_price=candidate['target_price'],
+                stop_loss_price=candidate['stop_loss'],
+                signal_score=candidate['scores']['signal_score'],
+                momentum_score=candidate['scores']['momentum_score'],
+                volume_score=candidate['scores']['volume_score'],
+                prediction_score=candidate['scores']['prediction_score'],
+                technical_score=candidate['scores']['technical_score'],
+                recommendation_reason=candidate['reason']
+            )
+            recommendations.append(rec)
+
+        return Response(self._format_recommendations(recommendations, bankroll))
+
+    def _calculate_scores(self, symbol, latest_day, latest_prediction):
+        """
+        Calculate individual scores for each factor (each 0-20 points).
+        Total max score = 100
+        """
+        scores = {
+            'signal_score': 0,
+            'momentum_score': 0,
+            'volume_score': 0,
+            'prediction_score': 0,
+            'technical_score': 0
+        }
+
+        # 1. Trading Signal Score (0-20)
+        signal_map = {
+            'STRONG_BUY': 20,
+            'BUY': 15,
+            'HOLD': 5,
+            'SELL': 0,
+            'STRONG_SELL': 0,
+            'NA': 5
+        }
+        scores['signal_score'] = signal_map.get(symbol.obv_status, 5)
+
+        # 2. Momentum Score (0-20) - Trend angle and recent price action
+        trend = symbol.thirty_close_trend
+        if trend > 20:
+            scores['momentum_score'] = 20
+        elif trend > 10:
+            scores['momentum_score'] = 16
+        elif trend > 5:
+            scores['momentum_score'] = 12
+        elif trend > 0:
+            scores['momentum_score'] = 8
+        else:
+            scores['momentum_score'] = 0
+
+        # 3. Volume Score (0-20) - Recent volume vs average
+        if latest_day and symbol.last_volume:
+            # Check if recent volume is elevated
+            recent_days = DaySymbol.objects.filter(symbol=symbol).order_by('-date')[:10]
+            if recent_days.count() >= 5:
+                avg_volume = sum(d.volume for d in recent_days) / recent_days.count()
+                volume_ratio = symbol.last_volume / avg_volume if avg_volume > 0 else 1
+
+                if volume_ratio > 1.5:
+                    scores['volume_score'] = 20
+                elif volume_ratio > 1.3:
+                    scores['volume_score'] = 16
+                elif volume_ratio > 1.1:
+                    scores['volume_score'] = 12
+                elif volume_ratio > 0.8:
+                    scores['volume_score'] = 8
+                else:
+                    scores['volume_score'] = 4
+            else:
+                scores['volume_score'] = 10  # Neutral if not enough data
+
+        # 4. Prediction Score (0-20) - AI alignment + accuracy
+        if latest_prediction:
+            if latest_prediction.prediction == 'POSITIVE':
+                base_score = 15
+            elif latest_prediction.prediction == 'NEUTRAL':
+                base_score = 8
+            else:
+                base_score = 0
+
+            # Boost by accuracy
+            if symbol.accuracy and symbol.accuracy > 0.7:
+                base_score += 5
+            elif symbol.accuracy and symbol.accuracy > 0.6:
+                base_score += 3
+
+            scores['prediction_score'] = min(base_score, 20)
+        else:
+            scores['prediction_score'] = 5
+
+        # 5. Technical Score (0-20) - RSI + MACD
+        tech_score = 0
+
+        if latest_day.rsi:
+            # Ideal RSI for day trading: 40-65 (room to run, not overbought)
+            if 45 <= latest_day.rsi <= 60:
+                tech_score += 10
+            elif 35 <= latest_day.rsi <= 70:
+                tech_score += 7
+            elif latest_day.rsi > 70:
+                tech_score += 2  # Overbought risk
+            else:
+                tech_score += 5
+        else:
+            tech_score += 5  # Neutral if no RSI
+
+        if latest_day.macd_histogram:
+            # Positive MACD histogram = bullish momentum
+            if latest_day.macd_histogram > 0:
+                tech_score += 10
+            elif latest_day.macd_histogram > -0.5:
+                tech_score += 5
+            else:
+                tech_score += 2
+        else:
+            tech_score += 5  # Neutral if no MACD
+
+        scores['technical_score'] = tech_score
+
+        return scores
+
+    def _calculate_position_sizing(self, picks, bankroll):
+        """
+        Calculate position sizes based on confidence and risk.
+        Higher confidence picks get larger allocation.
+        """
+        from decimal import Decimal
+
+        # Weight by confidence score
+        total_score = sum(p['total_score'] for p in picks)
+
+        allocations = []
+        for pick in picks:
+            # Allocate proportional to confidence
+            weight = pick['total_score'] / total_score
+            allocation = bankroll * Decimal(str(weight))
+
+            # Conservative cap: no single position > 35% of bankroll
+            max_allocation = bankroll * Decimal('0.35')
+            allocation = min(allocation, max_allocation)
+
+            allocations.append(allocation)
+
+        # Ensure we don't exceed bankroll
+        total_allocated = sum(allocations)
+        if total_allocated > bankroll:
+            ratio = bankroll / total_allocated
+            allocations = [a * ratio for a in allocations]
+
+        return allocations
+
+    def _format_recommendations(self, recommendations, bankroll):
+        """Format recommendations for API response"""
+        rec_list = []
+        total_allocated = Decimal('0')
+
+        for rec in recommendations:
+            shares = int(rec.recommended_allocation / Decimal(str(rec.entry_price)))
+            actual_cost = shares * Decimal(str(rec.entry_price))
+            total_allocated += actual_cost
+
+            potential_gain = shares * (Decimal(str(rec.target_price)) - Decimal(str(rec.entry_price)))
+            potential_loss = shares * (Decimal(str(rec.entry_price)) - Decimal(str(rec.stop_loss_price)))
+
+            rec_list.append({
+                'rank': rec.rank,
+                'symbol': rec.symbol.symbol,
+                'exchange': rec.symbol.exchange.code,
+                'company_name': rec.symbol.name,
+                'confidence_score': round(rec.confidence_score, 1),
+                'entry_price': round(rec.entry_price, 2),
+                'target_price': round(rec.target_price, 2),
+                'stop_loss': round(rec.stop_loss_price, 2),
+                'recommended_shares': shares,
+                'position_cost': float(actual_cost),
+                'potential_gain': float(potential_gain),
+                'potential_loss': float(potential_loss),
+                'risk_reward_ratio': float(potential_gain / potential_loss) if potential_loss > 0 else 0,
+                'reason': rec.recommendation_reason,
+                'score_breakdown': {
+                    'signal': round(rec.signal_score, 1),
+                    'momentum': round(rec.momentum_score, 1),
+                    'volume': round(rec.volume_score, 1),
+                    'prediction': round(rec.prediction_score, 1),
+                    'technical': round(rec.technical_score, 1)
+                }
+            })
+
+        return {
+            'date': recommendations[0].recommendation_date.isoformat(),
+            'bankroll': float(bankroll),
+            'total_allocated': float(total_allocated),
+            'cash_reserve': float(bankroll - total_allocated),
+            'recommendations': rec_list,
+            'strategy': 'Day Trading - Buy at open, Sell before close',
+            'risk_management': {
+                'stop_loss_rule': '1.5% below entry',
+                'target_profit': '2% above entry',
+                'max_position_size': '35% of bankroll'
+            },
+            'analysis': {
+                'picks_count': len(rec_list),
+                'avg_confidence': round(sum(r['confidence_score'] for r in rec_list) / len(rec_list), 1),
+                'total_potential_gain': float(sum(Decimal(str(r['potential_gain'])) for r in rec_list)),
+                'total_potential_loss': float(sum(Decimal(str(r['potential_loss'])) for r in rec_list))
+            }
+        }
+
+    def _format_existing_recommendations(self, existing, bankroll):
+        """Format already-generated recommendations"""
+        return Response(self._format_recommendations(list(existing), bankroll))
+
+
+class PortfolioTransactionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing portfolio transactions.
+
+    Automatically updates:
+    - Portfolio cash balance
+    - Portfolio holdings
+    - Average cost basis
+
+    POST /api/transactions/ - Create a new transaction (BUY/SELL)
+    GET /api/transactions/ - List all transactions
+    GET /api/transactions/?portfolio=1 - Filter by portfolio
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Users can only see their own transactions
+        queryset = PortfolioTransaction.objects.filter(portfolio__user=self.request.user)
+
+        # Filter by portfolio if specified
+        portfolio_id = self.request.query_params.get('portfolio')
+        if portfolio_id:
+            queryset = queryset.filter(portfolio_id=portfolio_id)
+
+        return queryset
+
+    def get_serializer_class(self):
+        from .serializers_transactions import PortfolioTransactionSerializer, PortfolioTransactionCreateSerializer
+
+        if self.action == 'create':
+            return PortfolioTransactionCreateSerializer
+        return PortfolioTransactionSerializer
+
+    def perform_create(self, serializer):
+        """Validate portfolio ownership before creating transaction"""
+        portfolio = serializer.validated_data.get('portfolio')
+        if portfolio.user != self.request.user:
+            raise rest_serializers.ValidationError("You can only add transactions to your own portfolios")
+        serializer.save()

@@ -1,6 +1,6 @@
 import logging
 from celery import shared_task
-from zimuabull.models import Symbol, DaySymbol, DaySymbolChoice
+from zimuabull.models import Symbol, DaySymbol, DaySymbolChoice, SignalHistory, DayPrediction
 from zimuabull.scanners.tse import BaseScanner
 
 logger = logging.getLogger(__name__)
@@ -75,13 +75,37 @@ def process_symbol_data(symbol_id, exchange_code):
             symbol.last_open = last_row["open"]
             symbol.last_close = last_row["close"]
             symbol.last_volume = last_row["volume"]
-            symbol.obv_status = last_row["status"]
             symbol.thirty_close_trend = last_row["30_day_close_trendline"]
             symbol.close_bucket = scanner.get_close_bucket(res)
             symbol.save()
 
             # Calculate predictions
             scanner.calculate_predictions(symbol, res)
+
+            # Calculate and update trading signal based on latest data
+            try:
+                previous_signal = symbol.obv_status
+                new_signal = symbol.update_trading_signal()
+
+                # Track signal changes in history
+                if new_signal != previous_signal:
+                    latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by('-date').first()
+
+                    SignalHistory.objects.create(
+                        symbol=symbol,
+                        date=last_row["date"],
+                        previous_signal=previous_signal,
+                        new_signal=new_signal,
+                        price=last_row["close"],
+                        volume=last_row["volume"],
+                        prediction=latest_prediction.prediction if latest_prediction else None,
+                        reason=f"Signal changed from {previous_signal} to {new_signal} during daily processing"
+                    )
+                    logger.info(f"Signal change recorded for {symbol.symbol}: {previous_signal} -> {new_signal}")
+
+                logger.info(f"Updated trading signal for {symbol.symbol}: {new_signal}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate trading signal for {symbol.symbol}: {e}")
 
         logger.info(f"Successfully processed {symbol.symbol}")
         return f"Processed {symbol.symbol} successfully"
