@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -434,6 +435,10 @@ class PortfolioTransaction(models.Model):
 
         is_new = self.pk is None
 
+        if self.transaction_type in [TransactionType.BUY, TransactionType.SELL] and self.symbol:
+            if self.symbol.exchange_id != self.portfolio.exchange_id:
+                raise ValidationError("Symbol exchange does not match portfolio exchange.")
+
         # Save the transaction first
         super().save(*args, **kwargs)
 
@@ -779,3 +784,114 @@ class DayTradingRecommendation(models.Model):
             if self.target_price:
                 self.hit_target = self.actual_high >= self.target_price
             self.save(update_fields=['actual_return', 'hit_target', 'updated_at'])
+
+
+class FeatureSnapshot(models.Model):
+    """
+    Daily feature bundle for a symbol, computed prior to market open.
+    Stores model-ready inputs and realized labels for supervised learning.
+    """
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE, related_name="feature_snapshots")
+    trade_date = models.DateField()
+    features = models.JSONField(default=dict)
+
+    # reference prices (optional but helpful for audits)
+    previous_close = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    open_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    close_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    high_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    low_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+
+    # labels for training (computed post-market)
+    intraday_return = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    max_favorable_excursion = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    max_adverse_excursion = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+
+    feature_version = models.CharField(max_length=20, default="v1")
+    label_ready = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("symbol", "trade_date", "feature_version")
+        indexes = [
+            models.Index(fields=["trade_date"]),
+            models.Index(fields=["symbol", "-trade_date"]),
+        ]
+        ordering = ["-trade_date"]
+
+    def __str__(self):
+        return f"{self.trade_date} - {self.symbol.symbol} ({self.feature_version})"
+
+
+class IntradayPriceSnapshot(models.Model):
+    """
+    Captures intraday price observations used for monitoring stop/target triggers.
+    """
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE, related_name="intraday_snapshots")
+    timestamp = models.DateTimeField()
+    price = models.DecimalField(max_digits=12, decimal_places=4)
+    volume = models.BigIntegerField(null=True, blank=True)
+    source = models.CharField(max_length=50, default="unknown")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["symbol", "-timestamp"]),
+            models.Index(fields=["-timestamp"]),
+        ]
+        ordering = ["-timestamp"]
+
+    def __str__(self):
+        return f"{self.symbol.symbol} @ {self.timestamp} = {self.price}"
+
+
+class DayTradePositionStatus(models.TextChoices):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+
+
+class DayTradePosition(models.Model):
+    """
+    Represents an intraday position opened by the autonomous trader.
+    """
+    portfolio = models.ForeignKey(Portfolio, on_delete=models.CASCADE, related_name="day_trade_positions")
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE, related_name="day_trade_positions")
+    trade_date = models.DateField()
+
+    status = models.CharField(max_length=20, choices=DayTradePositionStatus.choices, default=DayTradePositionStatus.OPEN)
+    shares = models.DecimalField(max_digits=12, decimal_places=4)
+    allocation = models.DecimalField(max_digits=15, decimal_places=2)
+
+    entry_price = models.DecimalField(max_digits=12, decimal_places=4)
+    entry_time = models.DateTimeField()
+    target_price = models.DecimalField(max_digits=12, decimal_places=4)
+    stop_price = models.DecimalField(max_digits=12, decimal_places=4)
+
+    exit_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    exit_time = models.DateTimeField(null=True, blank=True)
+    exit_reason = models.CharField(max_length=50, null=True, blank=True)
+
+    confidence_score = models.FloatField()
+    predicted_return = models.FloatField()
+    recommendation_rank = models.IntegerField(default=1)
+
+    notes = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-trade_date", "recommendation_rank"]
+        indexes = [
+            models.Index(fields=["portfolio", "-trade_date"]),
+            models.Index(fields=["symbol", "-trade_date"]),
+            models.Index(fields=["status"]),
+        ]
+        unique_together = ("portfolio", "symbol", "trade_date", "status")
+
+    def __str__(self):
+        return f"{self.trade_date} {self.symbol.symbol} ({self.status})"

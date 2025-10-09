@@ -24,6 +24,14 @@ class DaySymbolSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class DaySymbolDetailSerializer(serializers.ModelSerializer):
+    """Day symbol data without nested symbol info for lightweight embedding"""
+
+    class Meta:
+        model = DaySymbol
+        exclude = ['symbol']
+
+
 class DayPredictionSerializer(serializers.ModelSerializer):
     class Meta:
         model = DayPrediction

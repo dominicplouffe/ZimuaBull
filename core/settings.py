@@ -254,4 +254,29 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute='*/5'),  # Every 5 minutes
         "options": {"queue": "pidashtasks"},
     },
+    "day_trading_morning_session_early": {
+        "task": "zimuabull.tasks.day_trading.run_morning_trading_session",
+        "schedule": crontab(hour=13, minute=15, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_morning_session_late": {
+        "task": "zimuabull.tasks.day_trading.run_morning_trading_session",
+        "schedule": crontab(hour=14, minute=15, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_monitor": {
+        "task": "zimuabull.tasks.day_trading.monitor_intraday_positions",
+        "schedule": crontab(minute='*/10', hour='13-20', day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_close_session_early": {
+        "task": "zimuabull.tasks.day_trading.close_intraday_positions",
+        "schedule": crontab(hour=19, minute=30, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_close_session_late": {
+        "task": "zimuabull.tasks.day_trading.close_intraday_positions",
+        "schedule": crontab(hour=20, minute=30, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
 }

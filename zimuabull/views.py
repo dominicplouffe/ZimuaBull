@@ -7,9 +7,11 @@ from .models import (
     Conversation, ConversationMessage, SignalHistory, MarketIndex, MarketIndexData,
     DayTradingRecommendation, PortfolioTransaction
 )
+from .daytrading.trading_engine import generate_recommendations
 from .serializers import (
     SymbolSerializer,
     DaySymbolSerializer,
+    DaySymbolDetailSerializer,
     DayPredictionSerializer,
     FavoriteSerializer,
     ExchangeSerializer,
@@ -26,7 +28,7 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Prefetch
 from django.db import models
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -242,10 +244,39 @@ class FavoriteList(APIView):
     def get(self, request):
         user = request.user
         if user.is_authenticated:
-            favorites = [
-                {"symbol": f.symbol.symbol, "exchange": f.symbol.exchange.code}
-                for f in Favorite.objects.filter(user=user).select_related("symbol__exchange")
-            ]
+            latest_day_prefetch = Prefetch(
+                "symbol__daysymbol_set",
+                queryset=DaySymbol.objects.order_by("-date")[:1],
+                to_attr="latest_day_symbols",
+            )
+
+            favorites_queryset = (
+                Favorite.objects.filter(user=user)
+                .select_related("symbol__exchange")
+                .prefetch_related(latest_day_prefetch)
+            )
+
+            favorites = []
+            for favorite in favorites_queryset:
+                symbol = favorite.symbol
+                latest_day_symbol = None
+
+                prefetched = getattr(symbol, "latest_day_symbols", [])
+                if prefetched:
+                    latest_day_symbol = prefetched[0]
+
+                favorite_payload = {
+                    "symbol": symbol.symbol,
+                    "exchange": symbol.exchange.code,
+                }
+
+                if latest_day_symbol:
+                    day_symbol_data = DaySymbolDetailSerializer(latest_day_symbol).data
+                else:
+                    day_symbol_data = None
+
+                favorite_payload["day_symbol"] = day_symbol_data
+                favorites.append(favorite_payload)
 
             return Response(favorites, status=status.HTTP_200_OK)
         return Response([], status=status.HTTP_200_OK)
@@ -1823,272 +1854,83 @@ class DayTradingRecommendations(APIView):
 
         bankroll = Decimal(str(request.query_params.get('bankroll', '10000')))
         max_picks = int(request.query_params.get('max_picks', 5))
-        min_score = float(request.query_params.get('min_score', 60))
         exchange_filter = request.query_params.get('exchange')
         force_refresh = request.query_params.get('refresh', '').lower() == 'true'
 
         today = datetime.now().date()
 
-        # Check if we already have recommendations for today
         existing = DayTradingRecommendation.objects.filter(recommendation_date=today)
         if exchange_filter:
             existing = existing.filter(symbol__exchange__code=exchange_filter)
 
-        # If refresh requested, delete existing recommendations
         if force_refresh and existing.exists():
-            deleted_count = existing.count()
             existing.delete()
             existing = DayTradingRecommendation.objects.none()
 
         if existing.exists():
             return self._format_existing_recommendations(existing, bankroll)
 
-        # Generate new recommendations
-        recommendations = self._generate_recommendations(today, bankroll, max_picks, min_score, exchange_filter)
+        # Fresh generation using trained model
+        try:
+            recommendations = generate_recommendations(
+                trade_date=today,
+                max_positions=max_picks,
+                bankroll=float(bankroll),
+                exchange_filter=exchange_filter,
+            )
+        except FileNotFoundError:
+            return Response(
+                {
+                    "error": "Model file not found. Train the model via 'train_daytrading_model' command before requesting recommendations.",
+                    "recommendations": [],
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
-        return recommendations
-
-    def _generate_recommendations(self, date, bankroll, max_picks, min_score, exchange_filter):
-        """Generate trading recommendations based on sophisticated multi-factor analysis"""
-
-        # Get symbols with recent data
-        symbols = Symbol.objects.all()
-
-        if exchange_filter:
-            symbols = symbols.filter(exchange__code=exchange_filter)
-
-        # Only consider symbols with sufficient data
-        symbols = symbols.filter(
-            accuracy__gte=0.4,  # At least 40% accuracy
-            last_volume__gt=100000  # Minimum liquidity
-        )
-
-        candidates = []
-
-        for symbol in symbols:
-            # Get latest data
-            latest_day = DaySymbol.objects.filter(symbol=symbol).order_by('-date').first()
-            if not latest_day:
-                continue
-
-            # Get latest prediction
-            latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by('-date').first()
-
-            # Calculate composite score
-            scores = self._calculate_scores(symbol, latest_day, latest_prediction)
-            total_score = sum(scores.values())
-
-            # Skip if below threshold
-            if total_score < min_score:
-                continue
-
-            # Calculate risk metrics
-            entry_price = symbol.last_close
-            target_price = entry_price * 1.02  # Conservative 2% target for day trading
-            stop_loss = entry_price * 0.985  # 1.5% stop loss
-
-            # Build reason
-            reason_parts = []
-            if scores['signal_score'] > 15:
-                reason_parts.append(f"Strong {symbol.obv_status} signal")
-            if scores['momentum_score'] > 15:
-                reason_parts.append(f"Bullish trend ({symbol.thirty_close_trend:.1f}°)")
-            if scores['prediction_score'] > 15:
-                reason_parts.append("Positive AI prediction")
-            if scores['technical_score'] > 15:
-                reason_parts.append("Strong technical setup")
-            if scores['volume_score'] > 15:
-                reason_parts.append("High volume activity")
-
-            candidates.append({
-                'symbol': symbol,
-                'total_score': total_score,
-                'scores': scores,
-                'entry_price': entry_price,
-                'target_price': target_price,
-                'stop_loss': stop_loss,
-                'reason': '; '.join(reason_parts) if reason_parts else 'Multiple factors align'
-            })
-
-        # Sort by score and take top picks
-        candidates.sort(key=lambda x: x['total_score'], reverse=True)
-        top_picks = candidates[:max_picks]
-
-        if not top_picks:
+        if not recommendations:
             return Response({
-                "date": date.isoformat(),
+                "date": today.isoformat(),
                 "bankroll": float(bankroll),
                 "recommendations": [],
-                "message": "No symbols meet the minimum criteria today. Market conditions may not favor day trading.",
+                "message": "No qualifying symbols met the strategy criteria today.",
                 "analysis": {
-                    "symbols_analyzed": symbols.count(),
-                    "candidates_found": 0
+                    "symbols_analyzed": Symbol.objects.count(),
+                    "candidates_found": 0,
                 }
             })
 
-        # Calculate position sizing (equal weight with risk adjustment)
-        allocations = self._calculate_position_sizing(top_picks, bankroll)
+        saved_recs = []
+        for idx, rec in enumerate(recommendations, start=1):
+            signal_score = max(0, min(20, ((rec.features.get("obv_status_num", 0) + 2) / 4) * 20))
+            momentum = rec.features.get("momentum_5d") or rec.features.get("return_5d") or 0
+            momentum_score = max(0, min(20, momentum * 400))
+            volume_ratio = rec.features.get("volume_ratio_5d") or 1
+            volume_score = max(0, min(20, (volume_ratio - 0.5) * 20))
+            technical_score = max(0, min(20, (rec.features.get("rsi", 50) - 30)))
 
-        # Save recommendations to database
-        recommendations = []
-        for idx, candidate in enumerate(top_picks):
-            rec = DayTradingRecommendation.objects.create(
-                symbol=candidate['symbol'],
-                recommendation_date=date,
-                rank=idx + 1,
-                confidence_score=candidate['total_score'],
-                recommended_allocation=allocations[idx],
-                entry_price=candidate['entry_price'],
-                target_price=candidate['target_price'],
-                stop_loss_price=candidate['stop_loss'],
-                signal_score=candidate['scores']['signal_score'],
-                momentum_score=candidate['scores']['momentum_score'],
-                volume_score=candidate['scores']['volume_score'],
-                prediction_score=candidate['scores']['prediction_score'],
-                technical_score=candidate['scores']['technical_score'],
-                recommendation_reason=candidate['reason']
+            reason = f"Predicted return {rec.predicted_return:.2%}, ATR {rec.atr:.2f}, volume ratio {volume_ratio:.2f}"
+
+            saved, _ = DayTradingRecommendation.objects.update_or_create(
+                symbol=rec.symbol,
+                recommendation_date=today,
+                defaults={
+                    "rank": idx,
+                    "confidence_score": rec.confidence_score,
+                    "recommended_allocation": rec.allocation,
+                    "entry_price": rec.entry_price,
+                    "target_price": rec.target_price,
+                    "stop_loss_price": rec.stop_price,
+                    "signal_score": signal_score,
+                    "momentum_score": momentum_score,
+                    "volume_score": volume_score,
+                    "prediction_score": rec.predicted_return * 100,
+                    "technical_score": technical_score,
+                    "recommendation_reason": reason,
+                }
             )
-            recommendations.append(rec)
+            saved_recs.append(saved)
 
-        return Response(self._format_recommendations(recommendations, bankroll))
-
-    def _calculate_scores(self, symbol, latest_day, latest_prediction):
-        """
-        Calculate individual scores for each factor (each 0-20 points).
-        Total max score = 100
-        """
-        scores = {
-            'signal_score': 0,
-            'momentum_score': 0,
-            'volume_score': 0,
-            'prediction_score': 0,
-            'technical_score': 0
-        }
-
-        # 1. Trading Signal Score (0-20)
-        signal_map = {
-            'STRONG_BUY': 20,
-            'BUY': 15,
-            'HOLD': 5,
-            'SELL': 0,
-            'STRONG_SELL': 0,
-            'NA': 5
-        }
-        scores['signal_score'] = signal_map.get(symbol.obv_status, 5)
-
-        # 2. Momentum Score (0-20) - Trend angle and recent price action
-        trend = symbol.thirty_close_trend
-        if trend > 20:
-            scores['momentum_score'] = 20
-        elif trend > 10:
-            scores['momentum_score'] = 16
-        elif trend > 5:
-            scores['momentum_score'] = 12
-        elif trend > 0:
-            scores['momentum_score'] = 8
-        else:
-            scores['momentum_score'] = 0
-
-        # 3. Volume Score (0-20) - Recent volume vs average
-        if latest_day and symbol.last_volume:
-            # Check if recent volume is elevated
-            recent_days = DaySymbol.objects.filter(symbol=symbol).order_by('-date')[:10]
-            if recent_days.count() >= 5:
-                avg_volume = sum(d.volume for d in recent_days) / recent_days.count()
-                volume_ratio = symbol.last_volume / avg_volume if avg_volume > 0 else 1
-
-                if volume_ratio > 1.5:
-                    scores['volume_score'] = 20
-                elif volume_ratio > 1.3:
-                    scores['volume_score'] = 16
-                elif volume_ratio > 1.1:
-                    scores['volume_score'] = 12
-                elif volume_ratio > 0.8:
-                    scores['volume_score'] = 8
-                else:
-                    scores['volume_score'] = 4
-            else:
-                scores['volume_score'] = 10  # Neutral if not enough data
-
-        # 4. Prediction Score (0-20) - AI alignment + accuracy
-        if latest_prediction:
-            if latest_prediction.prediction == 'POSITIVE':
-                base_score = 15
-            elif latest_prediction.prediction == 'NEUTRAL':
-                base_score = 8
-            else:
-                base_score = 0
-
-            # Boost by accuracy
-            if symbol.accuracy and symbol.accuracy > 0.7:
-                base_score += 5
-            elif symbol.accuracy and symbol.accuracy > 0.6:
-                base_score += 3
-
-            scores['prediction_score'] = min(base_score, 20)
-        else:
-            scores['prediction_score'] = 5
-
-        # 5. Technical Score (0-20) - RSI + MACD
-        tech_score = 0
-
-        if latest_day.rsi:
-            # Ideal RSI for day trading: 40-65 (room to run, not overbought)
-            if 45 <= latest_day.rsi <= 60:
-                tech_score += 10
-            elif 35 <= latest_day.rsi <= 70:
-                tech_score += 7
-            elif latest_day.rsi > 70:
-                tech_score += 2  # Overbought risk
-            else:
-                tech_score += 5
-        else:
-            tech_score += 5  # Neutral if no RSI
-
-        if latest_day.macd_histogram:
-            # Positive MACD histogram = bullish momentum
-            if latest_day.macd_histogram > 0:
-                tech_score += 10
-            elif latest_day.macd_histogram > -0.5:
-                tech_score += 5
-            else:
-                tech_score += 2
-        else:
-            tech_score += 5  # Neutral if no MACD
-
-        scores['technical_score'] = tech_score
-
-        return scores
-
-    def _calculate_position_sizing(self, picks, bankroll):
-        """
-        Calculate position sizes based on confidence and risk.
-        Higher confidence picks get larger allocation.
-        """
-        from decimal import Decimal
-
-        # Weight by confidence score
-        total_score = sum(p['total_score'] for p in picks)
-
-        allocations = []
-        for pick in picks:
-            # Allocate proportional to confidence
-            weight = pick['total_score'] / total_score
-            allocation = bankroll * Decimal(str(weight))
-
-            # Conservative cap: no single position > 35% of bankroll
-            max_allocation = bankroll * Decimal('0.35')
-            allocation = min(allocation, max_allocation)
-
-            allocations.append(allocation)
-
-        # Ensure we don't exceed bankroll
-        total_allocated = sum(allocations)
-        if total_allocated > bankroll:
-            ratio = bankroll / total_allocated
-            allocations = [a * ratio for a in allocations]
-
-        return allocations
+        return Response(self._format_recommendations(saved_recs, bankroll))
 
     def _format_recommendations(self, recommendations, bankroll):
         """Format recommendations for API response"""
