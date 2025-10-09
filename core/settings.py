@@ -279,4 +279,29 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=20, minute=30, day_of_week='1-5'),
         "options": {"queue": "pidashtasks"},
     },
+    "day_trading_generate_features": {
+        "task": "zimuabull.tasks.day_trading.generate_daily_feature_snapshots",
+        "schedule": crontab(hour=11, minute=30, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_complete_labels": {
+        "task": "zimuabull.tasks.day_trading.complete_daily_feature_labels",
+        "schedule": crontab(hour=21, minute=30, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_daily_report": {
+        "task": "zimuabull.tasks.day_trading.daily_performance_report",
+        "schedule": crontab(hour=22, minute=0, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_health_check": {
+        "task": "zimuabull.tasks.day_trading.daily_trading_health_check",
+        "schedule": crontab(hour=21, minute=45, day_of_week='1-5'),
+        "options": {"queue": "pidashtasks"},
+    },
+    "day_trading_weekly_model_refresh": {
+        "task": "zimuabull.tasks.day_trading.weekly_model_refresh",
+        "schedule": crontab(hour=22, minute=0, day_of_week='0'),
+        "options": {"queue": "pidashtasks"},
+    },
 }

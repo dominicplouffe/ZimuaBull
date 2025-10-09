@@ -32,13 +32,18 @@
    - Review equity curve and metrics from CLI output.
 
 ## Autonomous Trading Flow
-Celery Beat now orchestrates three key tasks:
+Celery Beat now orchestrates the end-to-end workflow:
 
 | Schedule (UTC) | Task | Description |
 | --- | --- | --- |
-| 13:15 & 14:15 | `run_morning_trading_session` | Build daily recommendations, execute buys for user #1 portfolio. |
-| Every 10 min 13:00–20:59 | `monitor_intraday_positions` | Check stop/target levels, recycle capital into new picks when available. |
-| 19:30 & 20:30 | `close_intraday_positions` | Flatten remaining positions ahead of market close. |
+| 11:30 (Mon–Fri) | `generate_daily_feature_snapshots` | Refresh feature snapshots for the current trading session. |
+| 13:15 & 14:15 (Mon–Fri) | `run_morning_trading_session` | Build recommendations and execute entries for user #1. |
+| Every 10 min 13:00–20:59 (Mon–Fri) | `monitor_intraday_positions` | Track stops/targets and recycle freed capital into new picks. |
+| 19:30 & 20:30 (Mon–Fri) | `close_intraday_positions` | Flatten any remaining positions before the market close. |
+| 21:30 (Mon–Fri) | `complete_daily_feature_labels` | Populate labels/realized returns once official closes are in. |
+| 21:45 (Mon–Fri) | `daily_trading_health_check` | Flag open positions, orphan recs, or missing labels. |
+| 22:00 (Mon–Fri) | `daily_performance_report` | Summarize intraday PnL and win rate for the session. |
+| 22:00 (Sun) | `weekly_model_refresh` | Retrain the model on the latest data and run an in-sample backtest. |
 
 ### Portfolio Requirements
 - Active portfolio for `user_id = 1` with sufficient `cash_balance`.

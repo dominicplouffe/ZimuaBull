@@ -1,5 +1,6 @@
 import math
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Dict, Iterable, Optional, Tuple
 
 import pandas as pd
@@ -254,3 +255,55 @@ def backfill_features(
             if snapshot:
                 total_processed += 1
     return total_processed
+
+
+def update_labels_for_date(trade_date: date, symbols: Optional[Iterable[Symbol]] = None) -> int:
+    """
+    Populate label fields for FeatureSnapshots on the given trade_date
+    using finalized DaySymbol data.
+    """
+    if symbols is None:
+        snapshots = FeatureSnapshot.objects.filter(trade_date=trade_date, feature_version=FEATURE_VERSION).select_related("symbol")
+    else:
+        symbol_ids = [symbol.id for symbol in symbols]
+        snapshots = FeatureSnapshot.objects.filter(
+            trade_date=trade_date,
+            feature_version=FEATURE_VERSION,
+            symbol_id__in=symbol_ids,
+        ).select_related("symbol")
+
+    updated = 0
+    for snapshot in snapshots:
+        trade_day = DaySymbol.objects.filter(symbol=snapshot.symbol, date=trade_date).first()
+        if not trade_day:
+            continue
+
+        labels = _compute_labels(snapshot.symbol, trade_day)
+
+        def _to_decimal(value: Optional[float], quant: str = "0.0001") -> Optional[Decimal]:
+            if value is None:
+                return None
+            return Decimal(str(value)).quantize(Decimal(quant))
+
+        snapshot.open_price = _to_decimal(labels.get("open_price"))
+        snapshot.close_price = _to_decimal(labels.get("close_price"))
+        snapshot.high_price = _to_decimal(labels.get("high_price"))
+        snapshot.low_price = _to_decimal(labels.get("low_price"))
+        snapshot.intraday_return = _to_decimal(labels.get("intraday_return"))
+        snapshot.max_favorable_excursion = _to_decimal(labels.get("max_favorable_excursion"))
+        snapshot.max_adverse_excursion = _to_decimal(labels.get("max_adverse_excursion"))
+        snapshot.label_ready = labels.get("label_ready", True)
+        snapshot.save(update_fields=[
+            "open_price",
+            "close_price",
+            "high_price",
+            "low_price",
+            "intraday_return",
+            "max_favorable_excursion",
+            "max_adverse_excursion",
+            "label_ready",
+            "updated_at",
+        ])
+        updated += 1
+
+    return updated
