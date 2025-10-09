@@ -124,6 +124,129 @@ def update_portfolio_symbols_prices():
 
     return report
 
+
+def update_market_indices():
+    """
+    Update market indices data (S&P 500, NASDAQ, TSX, etc.)
+    Returns summary of updates
+    """
+    from zimuabull.models import MarketIndex, MarketIndexData
+
+    indices_updated = []
+    indices_failed = []
+
+    try:
+        indices = MarketIndex.objects.all()
+        today = datetime.datetime.now().date()
+
+        for index in indices:
+            try:
+                ticker = yf.Ticker(index.symbol)
+
+                # Try to get current price first
+                try:
+                    current_price = ticker.info.get('regularMarketPrice')
+                    if not current_price:
+                        current_price = ticker.info.get('currentPrice')
+                except Exception:
+                    current_price = None
+
+                # Fallback to history
+                if not current_price:
+                    hist = ticker.history(period="1d")
+                    if not hist.empty:
+                        current_price = hist['Close'].iloc[-1]
+
+                if current_price:
+                    # Update or create today's record
+                    hist = ticker.history(period="1d")
+                    if not hist.empty:
+                        row = hist.iloc[-1]
+                        MarketIndexData.objects.update_or_create(
+                            index=index,
+                            date=today,
+                            defaults={
+                                'open': float(row['Open']),
+                                'high': float(row['High']),
+                                'low': float(row['Low']),
+                                'close': float(row['Close']),
+                                'volume': int(row['Volume']) if row['Volume'] > 0 else None,
+                            }
+                        )
+                        indices_updated.append(f"{index.symbol}: ${current_price:.2f}")
+                    else:
+                        indices_failed.append(f"{index.symbol}: No history data")
+                else:
+                    indices_failed.append(f"{index.symbol}: No price available")
+
+            except Exception as e:
+                indices_failed.append(f"{index.symbol}: {str(e)}")
+
+    except Exception as e:
+        indices_failed.append(f"General error: {str(e)}")
+
+    return {
+        "updated": indices_updated,
+        "failed": indices_failed
+    }
+
+
+@shared_task
+def market_pulse_update():
+    """
+    Combined pulse task that updates both portfolio symbols and market indices.
+    Runs every 5 minutes during trading hours.
+
+    This task:
+    1. Updates all portfolio symbol prices
+    2. Updates market indices (S&P 500, NASDAQ, TSX, etc.)
+    3. Only runs during market hours for efficiency
+
+    Returns comprehensive summary of all updates.
+    """
+    # Check if any major market is open
+    major_exchanges = ['TSE', 'NASDAQ', 'NYSE']
+    any_market_open = False
+    market_status = {}
+
+    for exchange_code in major_exchanges:
+        is_open = is_market_open(exchange_code)
+        market_status[exchange_code] = is_open
+        if is_open:
+            any_market_open = True
+
+    # If no markets are open, skip the update
+    if not any_market_open:
+        return {
+            "status": "skipped",
+            "reason": "All markets closed",
+            "market_status": market_status,
+            "timestamp": timezone.now().isoformat()
+        }
+
+    # Run both updates
+    portfolio_report = update_portfolio_symbols_prices()
+    indices_report = update_market_indices()
+
+    # Combine reports
+    combined_report = {
+        "status": "completed",
+        "timestamp": timezone.now().isoformat(),
+        "market_status": market_status,
+        "portfolio_updates": {
+            "successful": len(portfolio_report.get("successful_updates", [])),
+            "failed": len(portfolio_report.get("failed_updates", [])),
+            "details": portfolio_report
+        },
+        "index_updates": {
+            "successful": len(indices_report.get("updated", [])),
+            "failed": len(indices_report.get("failed", [])),
+            "details": indices_report
+        }
+    }
+
+    return combined_report
+
 def is_market_open(exchange_code):
     """
     Check if the market is currently open for a given exchange

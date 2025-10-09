@@ -1815,6 +1815,7 @@ class DayTradingRecommendations(APIView):
     - max_picks: Maximum number of recommendations (default 5)
     - min_score: Minimum confidence score threshold (default 60)
     - exchange: Filter by exchange code (optional)
+    - refresh: Set to "true" to force recalculation (deletes existing recommendations for today)
     """
 
     def get(self, request):
@@ -1824,6 +1825,7 @@ class DayTradingRecommendations(APIView):
         max_picks = int(request.query_params.get('max_picks', 5))
         min_score = float(request.query_params.get('min_score', 60))
         exchange_filter = request.query_params.get('exchange')
+        force_refresh = request.query_params.get('refresh', '').lower() == 'true'
 
         today = datetime.now().date()
 
@@ -1831,6 +1833,12 @@ class DayTradingRecommendations(APIView):
         existing = DayTradingRecommendation.objects.filter(recommendation_date=today)
         if exchange_filter:
             existing = existing.filter(symbol__exchange__code=exchange_filter)
+
+        # If refresh requested, delete existing recommendations
+        if force_refresh and existing.exists():
+            deleted_count = existing.count()
+            existing.delete()
+            existing = DayTradingRecommendation.objects.none()
 
         if existing.exists():
             return self._format_existing_recommendations(existing, bankroll)
@@ -2183,3 +2191,154 @@ class PortfolioTransactionViewSet(viewsets.ModelViewSet):
         if portfolio.user != self.request.user:
             raise rest_serializers.ValidationError("You can only add transactions to your own portfolios")
         serializer.save()
+
+
+class LivePrice(APIView):
+    """
+    Fetch Live/Current Price for a Symbol
+
+    Fetches the most recent market price for a given symbol using Yahoo Finance.
+    Updates the symbol's latest_price field in the database.
+
+    **Query Parameters:**
+    - `symbol`: Stock symbol (required, e.g., AAPL)
+    - `exchange`: Exchange code (required, e.g., NASDAQ, TSE)
+
+    **Returns:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "exchange": "NASDAQ",
+        "live_price": 178.25,
+        "cached_price": 177.50,
+        "price_updated_at": "2025-10-09T14:30:00Z",
+        "data_source": "yahoo_finance",
+        "market_status": "open"
+    }
+    ```
+
+    **Examples:**
+    - `/api/live-price/?symbol=AAPL&exchange=NASDAQ`
+    - `/api/live-price/?symbol=SHOP&exchange=TSE`
+    """
+
+    def get(self, request):
+        import yfinance as yf
+        from decimal import Decimal, InvalidOperation
+        from django.utils import timezone
+        from django.db import transaction as db_transaction
+
+        symbol_ticker = request.query_params.get('symbol')
+        exchange_code = request.query_params.get('exchange')
+
+        if not symbol_ticker or not exchange_code:
+            return Response(
+                {"error": "Both 'symbol' and 'exchange' parameters are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get symbol from database
+        try:
+            symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
+        except Symbol.DoesNotExist:
+            return Response(
+                {"error": f"Symbol {symbol_ticker} not found on exchange {exchange_code}"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Store cached price before fetching
+        cached_price = float(symbol.latest_price) if symbol.latest_price else float(symbol.last_close)
+        cached_time = symbol.price_updated_at
+
+        # Resolve ticker for Yahoo Finance (special handling for TSX)
+        if exchange_code in ['TSE', 'TO']:
+            yf_ticker = f"{symbol_ticker}.TO"
+        else:
+            yf_ticker = symbol_ticker
+
+        try:
+            # Fetch live price from Yahoo Finance
+            ticker = yf.Ticker(yf_ticker)
+
+            live_price = None
+            data_source = "yahoo_finance"
+
+            # Try multiple methods to get the price
+            try:
+                # Method 1: regularMarketPrice from info
+                live_price = ticker.info.get('regularMarketPrice')
+                if not live_price:
+                    # Method 2: currentPrice from info
+                    live_price = ticker.info.get('currentPrice')
+            except Exception:
+                pass
+
+            if not live_price:
+                # Method 3: Latest close from history
+                try:
+                    hist = ticker.history(period="1d")
+                    if not hist.empty:
+                        live_price = hist['Close'].iloc[-1]
+                except Exception:
+                    pass
+
+            if not live_price:
+                return Response(
+                    {
+                        "error": f"Could not fetch live price for {symbol_ticker}",
+                        "symbol": symbol_ticker,
+                        "exchange": exchange_code,
+                        "cached_price": cached_price,
+                        "cached_time": cached_time
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
+            # Convert to Decimal safely
+            try:
+                live_price_decimal = Decimal(str(live_price)).quantize(Decimal('0.01'))
+            except (InvalidOperation, TypeError):
+                return Response(
+                    {"error": "Invalid price data received"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            # Update symbol in database
+            with db_transaction.atomic():
+                symbol.latest_price = live_price_decimal
+                symbol.price_updated_at = timezone.now()
+                symbol.save(update_fields=['latest_price', 'price_updated_at'])
+
+            # Check market status
+            from .tasks.portfolio_price_update import is_market_open
+            market_open = is_market_open(exchange_code)
+
+            # Calculate price change
+            price_change = float(live_price_decimal) - cached_price
+            price_change_percent = (price_change / cached_price * 100) if cached_price > 0 else 0
+
+            return Response({
+                "symbol": symbol_ticker,
+                "exchange": exchange_code,
+                "company_name": symbol.name,
+                "live_price": float(live_price_decimal),
+                "cached_price": cached_price,
+                "price_change": round(price_change, 2),
+                "price_change_percent": round(price_change_percent, 2),
+                "price_updated_at": symbol.price_updated_at.isoformat(),
+                "cached_time": cached_time.isoformat() if cached_time else None,
+                "data_source": data_source,
+                "market_status": "open" if market_open else "closed",
+                "yahoo_finance_ticker": yf_ticker
+            })
+
+        except Exception as e:
+            return Response(
+                {
+                    "error": f"Failed to fetch live price: {str(e)}",
+                    "symbol": symbol_ticker,
+                    "exchange": exchange_code,
+                    "cached_price": cached_price
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

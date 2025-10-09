@@ -249,9 +249,9 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=3, minute=5),
         "options": {"queue": "pidashtasks"},
     },
-    "zimuabull.tasks.portfolio_price_update.dynamic_update_portfolio_symbols_prices": {
-        "task": "zimuabull.tasks.portfolio_price_update.update_portfolio_symbols_prices",
-        "schedule": crontab(minute='*/5,*/30'),  # Every 5 minutes AND 30 minutes
+    "zimuabull.tasks.portfolio_price_update.market_pulse_update": {
+        "task": "zimuabull.tasks.portfolio_price_update.market_pulse_update",
+        "schedule": crontab(minute='*/5'),  # Every 5 minutes
         "options": {"queue": "pidashtasks"},
     },
 }

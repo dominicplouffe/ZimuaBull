@@ -28,6 +28,7 @@ from .views import (
     MarketBenchmarks,
     DayTradingRecommendations,
     PortfolioTransactionViewSet,
+    LivePrice,
 )
 
 router = DefaultRouter()
@@ -63,4 +64,6 @@ urlpatterns = [
     path("api/market-benchmarks/", MarketBenchmarks.as_view(), name="market-benchmarks"),
     # Day Trading
     path("api/day-trading-recommendations/", DayTradingRecommendations.as_view(), name="day-trading-recommendations"),
+    # Live Price
+    path("api/live-price/", LivePrice.as_view(), name="live-price"),
 ]
