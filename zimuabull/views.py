@@ -1,3 +1,6 @@
+import json
+
+from asgiref.sync import sync_to_async
 from rest_framework import viewsets, filters, serializers as rest_serializers
 from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
@@ -7,6 +10,10 @@ from .models import (
     Conversation, ConversationMessage, SignalHistory, MarketIndex, MarketIndexData,
     DayTradingRecommendation, PortfolioTransaction
 )
+from django.http import JsonResponse
+
+from .chat import ChatOrchestrator
+from .chat.sse import sse_response
 from .daytrading.trading_engine import generate_recommendations
 from .serializers import (
     SymbolSerializer,
@@ -1161,49 +1168,72 @@ class LLMContext(APIView):
 
 class ChatWithLLM(APIView):
     """
-    Chat Interface for LLM Integration
+    Conversational Analytics Agent
 
-    Send messages and get context-aware responses. This endpoint prepares data
-    for your LLM integration (you'll need to call Claude/ChatGPT API separately).
+    Accepts a user prompt, routes it through the orchestration layer (OpenAI +
+    structured tools), and responds with natural language plus machine-readable
+    analysis for the front-end.
 
     **Authentication Required**
 
     **POST Body:**
     ```json
     {
-        "message": "What stocks should I buy today?",
-        "conversation_id": "uuid",  // optional, for continuing conversations
+        "message": "How is MSFT trading today?",
+        "conversation_id": 42,          // optional, continue existing thread
         "context": {
-            "portfolio_ids": [1, 2],  // optional
-            "symbol": "AAPL",  // optional
-            "exchange": "NASDAQ",  // optional (required if symbol provided)
-            "include_market_overview": true  // optional
+            "symbol": "MSFT",          // optional hint
+            "exchange": "NASDAQ",      // optional, recommended with symbol
+            "history_days": 60,         // optional (default 30)
+            "include_history": true,    // include time series in analysis block
+            "include_portfolio": true   // include user portfolio snapshot
         }
     }
     ```
 
-    **Returns:**
+    **Response:**
     ```json
     {
-        "conversation_id": 1,
-        "prepared_context": {
-            "system_prompt": "You are ZimuaBull AI...",
-            "conversation_history": [...],
-            "current_data": {...}
+        "conversation_id": 42,
+        "reply": "Here is what I found...",
+        "analysis": {
+            "symbols": [
+                {
+                    "symbol": "MSFT",
+                    "exchange": "NASDAQ",
+                    "name": "Microsoft Corporation",
+                    "stats": {
+                        "latest_close": 328.45,
+                        "change_percent": 0.85,
+                        "signal": "BUY",
+                        ...
+                    },
+                    "price_history": [{"date": "2025-10-01", "close": 325.11, ...}]
+                }
+            ],
+            "portfolios": [
+                {
+                    "portfolio": "TSE Momentum",
+                    "exchange": "TSE",
+                    "cash_balance": 12000.0,
+                    "current_value": 48210.5,
+                    "active_positions": 7
+                }
+            ]
         },
-        "message_saved": true
+        "messages": [
+            {"role": "user", "content": "How is MSFT trading today?"},
+            {"role": "assistant", "content": "Here is what I found..."}
+        ]
     }
     ```
 
-    **Note:** This endpoint prepares the context and saves the conversation.
-    You need to call your LLM API (Claude/ChatGPT) with the prepared_context,
-    then POST the response back using the `/api/chat-response/` endpoint.
+    The agent stores both user and assistant turns, letting the UI load full
+    transcripts via `/api/conversations/` endpoints.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        from .llm_helpers import format_conversation_context
-
         message = request.data.get('message')
         conversation_id = request.data.get('conversation_id')
         context_params = request.data.get('context', {})
@@ -1237,41 +1267,78 @@ class ChatWithLLM(APIView):
             context_data=context_params
         )
 
-        # Build context for LLM
-        llm_context = format_conversation_context(
-            user=request.user,
-            query=message,
-            **context_params
+        try:
+            orchestrator = ChatOrchestrator()
+        except RuntimeError as exc:
+            fallback_reply = "The analytics engine is not configured. Please contact support."
+            ConversationMessage.objects.create(
+                conversation=conversation,
+                role='assistant',
+                content=fallback_reply,
+                context_data={"error": str(exc)}
+            )
+            history = [
+                {
+                    "role": msg.role,
+                    "content": msg.content
+                }
+                for msg in conversation.messages.order_by('created_at')
+            ]
+            return Response(
+                {
+                    "conversation_id": conversation.id,
+                    "reply": fallback_reply,
+                    "analysis": {},
+                    "messages": history,
+                    "status_updates": [],
+                    "tool_results": [],
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        agent_output = orchestrator.run(request.user, conversation, message, context_params)
+
+        reply = agent_output.get("reply", "I could not generate a response.")
+        analysis = agent_output.get("analysis", {})
+        status_updates = agent_output.get("status_updates", [])
+        tool_results = agent_output.get("tool_results", [])
+
+        ConversationMessage.objects.create(
+            conversation=conversation,
+            role='assistant',
+            content=reply,
+            context_data={
+                "analysis": analysis,
+                "status_updates": status_updates,
+                "tool_results": tool_results,
+            }
         )
 
-        # Get conversation history
-        history = []
-        for msg in conversation.messages.order_by('created_at'):
-            history.append({
+        history = [
+            {
                 "role": msg.role,
                 "content": msg.content
-            })
-
-        prepared_context = {
-            "system_prompt": llm_context['system_prompt'],
-            "conversation_history": history,
-            "current_data": llm_context.get('user_context', {}),
-            "timestamp": llm_context['timestamp']
-        }
+            }
+            for msg in conversation.messages.order_by('created_at')
+        ]
 
         return Response({
             "conversation_id": conversation.id,
-            "prepared_context": prepared_context,
-            "message_saved": True,
-            "note": "Use prepared_context to call your LLM API, then POST response to /api/chat-response/"
+            "reply": reply,
+            "analysis": analysis,
+            "messages": history,
+            "status_updates": status_updates,
+            "tool_results": tool_results,
         })
 
 
 class SaveChatResponse(APIView):
     """
-    Save LLM Response to Conversation
+    Save External Chat Response (Optional)
 
-    After getting a response from your LLM (Claude/ChatGPT), save it to the conversation.
+    Kept for backwards compatibility. Integrations that still call an external LLM
+    can push the assistant message into the transcript via this endpoint. Newer
+    flows can rely entirely on POST /api/chat/.
 
     **Authentication Required**
 
@@ -1317,6 +1384,53 @@ class SaveChatResponse(APIView):
         })
 
 
+async def chat_stream(request):
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication credentials were not provided."}, status=401)
+
+    message = request.GET.get("message")
+    if not message:
+        return JsonResponse({"error": "Message is required"}, status=400)
+
+    context_param = request.GET.get("context")
+    context = {}
+    if context_param:
+        try:
+            context = json.loads(context_param)
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "context must be valid JSON"}, status=400)
+
+    conversation_id = request.GET.get("conversation_id")
+
+    if conversation_id:
+        try:
+            conversation = await sync_to_async(Conversation.objects.get)(id=conversation_id, user=request.user)
+        except Conversation.DoesNotExist:
+            return JsonResponse({"error": "Conversation not found"}, status=404)
+    else:
+        conversation = await sync_to_async(Conversation.objects.create)(
+            user=request.user,
+            title=message[:100]
+        )
+
+    await sync_to_async(ConversationMessage.objects.create)(
+        conversation=conversation,
+        role='user',
+        content=message,
+        context_data=context
+    )
+
+    try:
+        orchestrator = ChatOrchestrator()
+    except RuntimeError as exc:
+        return JsonResponse({"error": str(exc)}, status=503)
+
+    return sse_response(orchestrator, request.user, conversation, message, context)
+
+
 class ConversationList(APIView):
     """
     List User's Conversations
@@ -1354,6 +1468,12 @@ class ConversationList(APIView):
             })
 
         return Response(data)
+
+    def delete(self, request):
+        conversations = Conversation.objects.filter(user=request.user)
+        count = conversations.count()
+        conversations.delete()
+        return Response({"deleted": count}, status=status.HTTP_200_OK)
 
 
 class ConversationDetail(APIView):
@@ -1410,6 +1530,18 @@ class ConversationDetail(APIView):
             "updated_at": conversation.updated_at,
             "messages": messages
         })
+
+    def delete(self, request, conversation_id):
+        try:
+            conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+        except Conversation.DoesNotExist:
+            return Response(
+                {"error": "Conversation not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        conversation.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CompareSymbols(APIView):

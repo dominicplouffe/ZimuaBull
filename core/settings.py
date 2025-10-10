@@ -230,6 +230,10 @@ STATIC_URL = "/static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# OpenAI integration
+OPENAI_API_KEY = get_env_variable("OPENAI_API_KEY")
+OPENAI_MODEL = get_env_variable("OPENAI_MODEL", "gpt-4.1-mini")
+
 # Celery Settings
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
 CELERY_RESULT_BACKEND = os.environ.get(

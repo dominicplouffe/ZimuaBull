@@ -49,15 +49,18 @@ class Recommendation:
     features: dict
 
 
-def get_portfolio_for_user(user_id: int) -> Portfolio:
-    portfolio = (
+def get_portfolios_for_user(user_id: int) -> List[Portfolio]:
+    portfolios = list(
         Portfolio.objects.filter(user_id=user_id, is_active=True)
         .order_by("created_at")
-        .first()
     )
-    if not portfolio:
+    if not portfolios:
         raise ValueError(f"No active portfolio found for user {user_id}.")
-    return portfolio
+    return portfolios
+
+
+def get_portfolio_for_user(user_id: int) -> Portfolio:
+    return get_portfolios_for_user(user_id)[0]
 
 
 def _yf_symbol(symbol: Symbol) -> str:
@@ -265,6 +268,16 @@ def execute_recommendations(
     with transaction.atomic():
         for idx, rec in enumerate(recommendations, start=1):
             if rec.symbol.exchange_id != portfolio.exchange_id:
+                continue
+
+            # Skip if an open position already exists for this symbol/trade date
+            existing_position = DayTradePosition.objects.filter(
+                portfolio=portfolio,
+                symbol=rec.symbol,
+                trade_date=trade_date,
+                status=DayTradePositionStatus.OPEN,
+            ).first()
+            if existing_position:
                 continue
 
             live_price = fetch_live_price(rec.symbol)

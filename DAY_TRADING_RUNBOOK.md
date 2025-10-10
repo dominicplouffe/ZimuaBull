@@ -62,9 +62,9 @@ Celery Beat now orchestrates the end-to-end workflow:
 - To close positions immediately:
   ```bash
   python manage.py shell <<'PY'
-  from zimuabull.daytrading.trading_engine import get_portfolio_for_user, close_all_positions
-  portfolio = get_portfolio_for_user(1)
-  close_all_positions(portfolio)
+  from zimuabull.daytrading.trading_engine import get_portfolios_for_user, close_all_positions
+  for portfolio in get_portfolios_for_user(1):
+      close_all_positions(portfolio)
   PY
   ```
 

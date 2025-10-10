@@ -19,7 +19,7 @@ from zimuabull.daytrading.trading_engine import (
     execute_recommendations,
     generate_recommendations,
     get_open_day_trade_positions,
-    get_portfolio_for_user,
+    get_portfolios_for_user,
     monitor_positions,
 )
 from zimuabull.models import (
@@ -56,29 +56,49 @@ def run_morning_trading_session(self):
     if not _is_trading_day():
         return {"status": "skipped", "reason": "market_closed"}
 
-    portfolio = get_portfolio_for_user(AUTONOMOUS_USER_ID)
     trade_date = timezone.now().astimezone(NY_TZ).date()
+    results = []
 
-    if DayTradePosition.objects.filter(portfolio=portfolio, trade_date=trade_date).exists():
-        return {"status": "skipped", "reason": "already_executed"}
+    for portfolio in get_portfolios_for_user(AUTONOMOUS_USER_ID):
+        portfolio_result = {
+            "portfolio": portfolio.id,
+            "exchange": portfolio.exchange.code,
+        }
 
-    bankroll = float(portfolio.cash_balance)
+        if DayTradePosition.objects.filter(portfolio=portfolio, trade_date=trade_date).exists():
+            portfolio_result.update({"status": "skipped", "reason": "already_executed"})
+            results.append(portfolio_result)
+            continue
 
-    recommendations = generate_recommendations(
-        trade_date=trade_date,
-        max_positions=MAX_RECOMMENDATIONS,
-        bankroll=bankroll,
-        exchange_filter=portfolio.exchange.code,
-    )
+        bankroll = float(portfolio.cash_balance)
+        if bankroll <= 0:
+            portfolio_result.update({"status": "skipped", "reason": "insufficient_cash"})
+            results.append(portfolio_result)
+            continue
 
-    positions = execute_recommendations(recommendations, portfolio, trade_date)
+        recommendations = generate_recommendations(
+            trade_date=trade_date,
+            max_positions=MAX_RECOMMENDATIONS,
+            bankroll=bankroll,
+            exchange_filter=portfolio.exchange.code,
+        )
+
+        positions = execute_recommendations(recommendations, portfolio, trade_date)
+        portfolio.refresh_from_db()
+
+        portfolio_result.update(
+            {
+                "status": "completed",
+                "recommendations": len(recommendations),
+                "executed_positions": len(positions),
+                "cash_balance": float(portfolio.cash_balance),
+            }
+        )
+        results.append(portfolio_result)
 
     return {
-        "portfolio": portfolio.id,
         "trade_date": str(trade_date),
-        "recommendations": len(recommendations),
-        "executed_positions": len(positions),
-        "cash_balance": float(portfolio.cash_balance),
+        "portfolios": results,
     }
 
 
@@ -86,8 +106,8 @@ def run_morning_trading_session(self):
 def monitor_intraday_positions(self):
     if not _market_window_open():
         return
-    portfolio = get_portfolio_for_user(AUTONOMOUS_USER_ID)
-    monitor_positions(portfolio)
+    for portfolio in get_portfolios_for_user(AUTONOMOUS_USER_ID):
+        monitor_positions(portfolio)
 
 
 @shared_task(bind=True, ignore_result=False, queue="pidashtasks")
@@ -95,14 +115,21 @@ def close_intraday_positions(self):
     if not _is_trading_day():
         return {"status": "skipped", "reason": "market_closed"}
 
-    portfolio = get_portfolio_for_user(AUTONOMOUS_USER_ID)
-    open_positions = get_open_day_trade_positions(portfolio)
-    close_all_positions(portfolio)
+    results = []
+    for portfolio in get_portfolios_for_user(AUTONOMOUS_USER_ID):
+        open_positions = get_open_day_trade_positions(portfolio)
+        close_all_positions(portfolio)
+        portfolio.refresh_from_db()
+        results.append(
+            {
+                "portfolio": portfolio.id,
+                "closed_positions": len(open_positions),
+                "cash_balance": float(portfolio.cash_balance),
+            }
+        )
 
     return {
-        "portfolio": portfolio.id,
-        "closed_positions": len(open_positions),
-        "cash_balance": float(portfolio.cash_balance),
+        "portfolios": results,
     }
 
 

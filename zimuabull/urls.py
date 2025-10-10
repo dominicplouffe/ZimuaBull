@@ -21,6 +21,7 @@ from .views import (
     LLMContext,
     ChatWithLLM,
     SaveChatResponse,
+    chat_stream,
     ConversationList,
     ConversationDetail,
     CompareSymbols,
@@ -56,6 +57,7 @@ urlpatterns = [
     # LLM Integration endpoints
     path("api/llm-context/", LLMContext.as_view(), name="llm-context"),
     path("api/chat/", ChatWithLLM.as_view(), name="chat"),
+    path("api/chat/stream/", chat_stream, name="chat-stream"),
     path("api/chat-response/", SaveChatResponse.as_view(), name="chat-response"),
     path("api/conversations/", ConversationList.as_view(), name="conversations"),
     path("api/conversations/<int:conversation_id>/", ConversationDetail.as_view(), name="conversation-detail"),
