@@ -71,6 +71,10 @@ Celery Beat now orchestrates the end-to-end workflow:
   ```bash
   python manage.py delete_portfolio <portfolio_id> --user-id <owner_id>
   ```
+- To review weekly performance manually:
+  ```bash
+  python manage.py weekly_portfolio_review --date 2025-10-11
+  ```
 
 ## Validation
 - Run `python3 -m compileall zimuabull/daytrading zimuabull/tasks/day_trading.py` to ensure syntax integrity.

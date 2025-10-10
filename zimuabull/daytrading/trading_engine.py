@@ -20,6 +20,7 @@ from zimuabull.models import (
     DayTradePositionStatus,
     DayTradingRecommendation,
     Portfolio,
+    PortfolioSnapshot,
     PortfolioTransaction,
     Symbol,
     TransactionType,
@@ -371,3 +372,16 @@ def close_all_positions(portfolio: Portfolio):
         live_price = fetch_live_price(position.symbol)
         exit_price = Decimal(str(live_price if live_price else position.entry_price))
         close_position(position, exit_price, "session_close")
+
+    portfolio.refresh_from_db()
+    PortfolioSnapshot.objects.update_or_create(
+        portfolio=portfolio,
+        date=dj_timezone.now().date(),
+        defaults=
+        {
+            "total_value": Decimal(str(portfolio.current_value())),
+            "total_invested": Decimal(str(portfolio.total_invested())),
+            "gain_loss": Decimal(str(portfolio.total_gain_loss())),
+            "gain_loss_percent": Decimal(str(portfolio.total_gain_loss_percent())),
+        },
+    )

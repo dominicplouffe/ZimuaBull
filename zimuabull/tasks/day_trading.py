@@ -277,3 +277,11 @@ def daily_trading_health_check(self):
         "stale_snapshots": stale_snapshots,
         "warnings": warnings,
     }
+
+
+@shared_task(bind=True, ignore_result=False, queue="pidashtasks")
+def weekly_portfolio_review(self):
+    from zimuabull.services.portfolio_review import generate_weekly_portfolio_report
+    report = generate_weekly_portfolio_report()
+    self.app.log.get_default_logger().info("Weekly portfolio review:\\n%s", report)
+    return {"report": report}

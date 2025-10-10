@@ -307,4 +307,9 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=22, minute=0, day_of_week='0'),
         "options": {"queue": "pidashtasks"},
     },
+    "day_trading_weekly_portfolio_review": {
+        "task": "zimuabull.tasks.day_trading.weekly_portfolio_review",
+        "schedule": crontab(hour=14, minute=0, day_of_week='6'),
+        "options": {"queue": "pidashtasks"},
+    },
 }

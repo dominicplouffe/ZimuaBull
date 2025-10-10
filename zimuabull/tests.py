@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from zimuabull.daytrading.trading_engine import (
     Recommendation,
-    close_position,
+    close_all_positions,
     execute_recommendations,
 )
 from zimuabull.models import (
@@ -15,6 +15,7 @@ from zimuabull.models import (
     DayTradePositionStatus,
     Exchange,
     Portfolio,
+    PortfolioSnapshot,
     PortfolioTransaction,
     Symbol,
 )
@@ -57,8 +58,9 @@ class TradingEngineTests(TestCase):
             features={},
         )
 
-    @patch("zimuabull.daytrading.trading_engine.fetch_live_price", return_value=None)
-    def test_execute_and_close_positions_updates_cash_balance(self, _mock_fetch_price):
+    @patch("zimuabull.daytrading.trading_engine.fetch_live_price")
+    def test_execute_and_close_positions_updates_cash_balance(self, mock_fetch_price):
+        mock_fetch_price.side_effect = [None, 110.0]
         rec = self._recommendation(entry_price=100.0, target_price=110.0, stop_price=95.0)
         trade_date = timezone.now().date()
 
@@ -74,7 +76,7 @@ class TradingEngineTests(TestCase):
         self.assertEqual(self.portfolio.cash_balance, Decimal("9000.00"))
         self.assertEqual(self.symbol.latest_price, Decimal("100.00"))
 
-        close_position(position, Decimal("110.00"), "target_hit")
+        close_all_positions(self.portfolio)
         self.portfolio.refresh_from_db()
 
         self.assertEqual(self.portfolio.cash_balance, Decimal("10100.00"))
@@ -83,6 +85,9 @@ class TradingEngineTests(TestCase):
         self.assertEqual(position.exit_price, Decimal("110.00"))
 
         self.assertEqual(PortfolioTransaction.objects.filter(portfolio=self.portfolio).count(), 2)
+        self.assertTrue(
+            PortfolioSnapshot.objects.filter(portfolio=self.portfolio, date=timezone.now().date()).exists()
+        )
 
     @patch("zimuabull.daytrading.trading_engine.fetch_live_price", return_value=None)
     def test_execute_recommendations_idempotent(self, _mock_fetch_price):
