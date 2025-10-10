@@ -160,10 +160,9 @@ CSRF_TRUSTED_ORIGINS = [] if not env_trusted_origin else [env_trusted_origin]
 
 # Check if we're running in local development environment
 IS_LOCAL_DEV = os.environ.get("ENV", "local").lower() == "local"
+IS_TEST_DEV = os.environ.get("ENV", "test").lower() == "test"
 
-print(IS_LOCAL_DEV, os.environ.get("ENV", "local"))
-
-if IS_LOCAL_DEV:
+if IS_LOCAL_DEV or IS_TEST_DEV:
     # Use SQLite for local development
     DATABASES = {
         "default": {
