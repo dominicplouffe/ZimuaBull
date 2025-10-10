@@ -1,4 +1,5 @@
 import json
+import math
 
 from asgiref.sync import sync_to_async
 from rest_framework import viewsets, filters, serializers as rest_serializers
@@ -1981,6 +1982,18 @@ class DayTradingRecommendations(APIView):
     - refresh: Set to "true" to force recalculation (deletes existing recommendations for today)
     """
 
+    @staticmethod
+    def _safe_float(value, default=None):
+        if value is None:
+            return default
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            return default
+        if math.isfinite(f):
+            return f
+        return default
+
     def get(self, request):
         from decimal import Decimal
 
@@ -2084,8 +2097,8 @@ class DayTradingRecommendations(APIView):
         total_allocated = Decimal('0')
 
         for rec in recommendations:
-            shares = int(rec.recommended_allocation / Decimal(str(rec.entry_price)))
-            actual_cost = shares * Decimal(str(rec.entry_price))
+            shares = int(rec.recommended_allocation / Decimal(str(rec.entry_price))) if rec.entry_price else 0
+            actual_cost = shares * Decimal(str(rec.entry_price)) if rec.entry_price else Decimal("0")
             total_allocated += actual_cost
 
             potential_gain = shares * (Decimal(str(rec.target_price)) - Decimal(str(rec.entry_price)))
@@ -2096,30 +2109,30 @@ class DayTradingRecommendations(APIView):
                 'symbol': rec.symbol.symbol,
                 'exchange': rec.symbol.exchange.code,
                 'company_name': rec.symbol.name,
-                'confidence_score': round(rec.confidence_score, 1),
-                'entry_price': round(rec.entry_price, 2),
-                'target_price': round(rec.target_price, 2),
-                'stop_loss': round(rec.stop_loss_price, 2),
+                'confidence_score': self._safe_float(round(rec.confidence_score, 1)),
+                'entry_price': self._safe_float(round(rec.entry_price, 2)),
+                'target_price': self._safe_float(round(rec.target_price, 2)),
+                'stop_loss': self._safe_float(round(rec.stop_loss_price, 2)),
                 'recommended_shares': shares,
-                'position_cost': float(actual_cost),
-                'potential_gain': float(potential_gain),
-                'potential_loss': float(potential_loss),
-                'risk_reward_ratio': float(potential_gain / potential_loss) if potential_loss > 0 else 0,
+                'position_cost': self._safe_float(actual_cost),
+                'potential_gain': self._safe_float(potential_gain),
+                'potential_loss': self._safe_float(potential_loss),
+                'risk_reward_ratio': self._safe_float(potential_gain / potential_loss) if potential_loss > 0 else 0,
                 'reason': rec.recommendation_reason,
                 'score_breakdown': {
-                    'signal': round(rec.signal_score, 1),
-                    'momentum': round(rec.momentum_score, 1),
-                    'volume': round(rec.volume_score, 1),
-                    'prediction': round(rec.prediction_score, 1),
-                    'technical': round(rec.technical_score, 1)
+                    'signal': self._safe_float(round(rec.signal_score, 1)),
+                    'momentum': self._safe_float(round(rec.momentum_score, 1)),
+                    'volume': self._safe_float(round(rec.volume_score, 1)),
+                    'prediction': self._safe_float(round(rec.prediction_score, 1)),
+                    'technical': self._safe_float(round(rec.technical_score, 1))
                 }
             })
 
-        return {
+        summary = {
             'date': recommendations[0].recommendation_date.isoformat(),
-            'bankroll': float(bankroll),
-            'total_allocated': float(total_allocated),
-            'cash_reserve': float(bankroll - total_allocated),
+            'bankroll': self._safe_float(bankroll),
+            'total_allocated': self._safe_float(total_allocated),
+            'cash_reserve': self._safe_float(bankroll - total_allocated),
             'recommendations': rec_list,
             'strategy': 'Day Trading - Buy at open, Sell before close',
             'risk_management': {
@@ -2129,11 +2142,13 @@ class DayTradingRecommendations(APIView):
             },
             'analysis': {
                 'picks_count': len(rec_list),
-                'avg_confidence': round(sum(r['confidence_score'] for r in rec_list) / len(rec_list), 1),
-                'total_potential_gain': float(sum(Decimal(str(r['potential_gain'])) for r in rec_list)),
-                'total_potential_loss': float(sum(Decimal(str(r['potential_loss'])) for r in rec_list))
+                'avg_confidence': self._safe_float(round(sum(r['confidence_score'] or 0 for r in rec_list) / len(rec_list), 1)) if rec_list else 0,
+                'total_potential_gain': self._safe_float(sum(Decimal(str(r['potential_gain'])) for r in rec_list if r['potential_gain'] is not None)),
+                'total_potential_loss': self._safe_float(sum(Decimal(str(r['potential_loss'])) for r in rec_list if r['potential_loss'] is not None))
             }
         }
+
+        return summary
 
     def _format_existing_recommendations(self, existing, bankroll):
         """Format already-generated recommendations"""
