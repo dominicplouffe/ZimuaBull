@@ -67,6 +67,10 @@ Celery Beat now orchestrates the end-to-end workflow:
       close_all_positions(portfolio)
   PY
   ```
+- To delete a portfolio and all related data:
+  ```bash
+  python manage.py delete_portfolio <portfolio_id> --user-id <owner_id>
+  ```
 
 ## Validation
 - Run `python3 -m compileall zimuabull/daytrading zimuabull/tasks/day_trading.py` to ensure syntax integrity.

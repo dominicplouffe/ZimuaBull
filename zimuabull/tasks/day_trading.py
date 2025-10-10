@@ -1,3 +1,4 @@
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from celery import shared_task
@@ -51,10 +52,21 @@ def _coerce_float(value):
         return value
 
 
+def _within_entry_window() -> bool:
+    now = timezone.now().astimezone(NY_TZ)
+    target = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    start = target - timedelta(minutes=5)
+    end = target + timedelta(minutes=5)
+    return start <= now <= end
+
+
 @shared_task(bind=True, ignore_result=False, queue="pidashtasks")
 def run_morning_trading_session(self):
     if not _is_trading_day():
         return {"status": "skipped", "reason": "market_closed"}
+
+    if not _within_entry_window():
+        return {"status": "skipped", "reason": "outside_entry_window"}
 
     trade_date = timezone.now().astimezone(NY_TZ).date()
     results = []

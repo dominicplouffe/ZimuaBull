@@ -287,6 +287,10 @@ def execute_recommendations(
             if portfolio.cash_balance < entry_price * shares:
                 continue
 
+            rec.symbol.latest_price = entry_price.quantize(Decimal("0.01"))
+            rec.symbol.price_updated_at = dj_timezone.now()
+            rec.symbol.save(update_fields=["latest_price", "price_updated_at"])
+
             _create_transaction(
                 portfolio=portfolio,
                 symbol=rec.symbol,
@@ -358,36 +362,7 @@ def monitor_positions(portfolio: Portfolio):
             close_position(position, price, "stop_hit")
 
     open_after = get_open_day_trade_positions(portfolio)
-    if len(open_after) >= MAX_RECOMMENDATIONS:
-        return
-
-    available_slots = MAX_RECOMMENDATIONS - len(open_after)
-    if available_slots <= 0:
-        return
-
-    bankroll = float(portfolio.cash_balance)
-    if bankroll <= 0:
-        return
-
-    traded_symbols = {
-        pos.symbol_id for pos in DayTradePosition.objects.filter(portfolio=portfolio, trade_date=trade_date)
-    }
-
-    try:
-        new_recommendations = generate_recommendations(
-            trade_date=trade_date,
-            max_positions=available_slots,
-            bankroll=bankroll,
-            exchange_filter=portfolio.exchange.code,
-        )
-    except FileNotFoundError:
-        return
-
-    filtered = [rec for rec in new_recommendations if rec.symbol.id not in traded_symbols]
-    if not filtered:
-        return
-
-    execute_recommendations(filtered[:available_slots], portfolio, trade_date)
+    # No re-entry trades during the day; purchases only occur during the morning window
 
 
 def close_all_positions(portfolio: Portfolio):
