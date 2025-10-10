@@ -21,7 +21,7 @@ TARGET_COLUMN = "intraday_return"
 # Backtest defaults
 BACKTEST_TRANSACTION_COST_BPS = 5  # 0.05% cost per trade
 BACKTEST_SLIPPAGE_BPS = 5
-MAX_RECOMMENDATIONS = 5
+MAX_RECOMMENDATIONS = 50
 DEFAULT_BANKROLL = 10000
 
 # Autonomous trading configuration
