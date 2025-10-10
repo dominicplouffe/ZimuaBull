@@ -1899,14 +1899,28 @@ class DayTradingRecommendations(APIView):
                 }
             })
 
+        def _safe_float(value, default=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
         saved_recs = []
         for idx, rec in enumerate(recommendations, start=1):
-            signal_score = max(0, min(20, ((rec.features.get("obv_status_num", 0) + 2) / 4) * 20))
-            momentum = rec.features.get("momentum_5d") or rec.features.get("return_5d") or 0
+            obv_status = _safe_float(rec.features.get("obv_status_num"), 0.0)
+            signal_score = max(0, min(20, ((obv_status + 2) / 4) * 20))
+
+            momentum = rec.features.get("momentum_5d")
+            if momentum is None:
+                momentum = rec.features.get("return_5d")
+            momentum = _safe_float(momentum, 0.0)
             momentum_score = max(0, min(20, momentum * 400))
-            volume_ratio = rec.features.get("volume_ratio_5d") or 1
+
+            volume_ratio = _safe_float(rec.features.get("volume_ratio_5d"), 1.0)
             volume_score = max(0, min(20, (volume_ratio - 0.5) * 20))
-            technical_score = max(0, min(20, (rec.features.get("rsi", 50) - 30)))
+
+            technical_base = _safe_float(rec.features.get("rsi"), 50.0)
+            technical_score = max(0, min(20, (technical_base - 30)))
 
             reason = f"Predicted return {rec.predicted_return:.2%}, ATR {rec.atr:.2f}, volume ratio {volume_ratio:.2f}"
 
