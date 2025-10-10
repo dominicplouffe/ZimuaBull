@@ -1,8 +1,10 @@
 import logging
-from celery import shared_task
-from zimuabull.models import Symbol, DaySymbol
-from zimuabull.scanners.tse import BaseScanner
+
 import pandas as pd
+from celery import shared_task
+
+from zimuabull.models import DaySymbol, Symbol
+from zimuabull.scanners.tse import BaseScanner
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ def recalculate_predictions_for_symbol(symbol_id):
         logger.info(f"Recalculating predictions for {symbol.symbol}")
 
         # Get all existing day symbol data for this symbol
-        day_symbols = DaySymbol.objects.filter(symbol=symbol).order_by('date')
+        day_symbols = DaySymbol.objects.filter(symbol=symbol).order_by("date")
 
         if not day_symbols.exists():
             logger.warning(f"No historical data found for {symbol.symbol}")
@@ -25,37 +27,37 @@ def recalculate_predictions_for_symbol(symbol_id):
 
         # Convert to DataFrame format that calculate_predictions expects
         data = {
-            'date': [],
-            'open': [],
-            'high': [],
-            'low': [],
-            'adj_close': [],
-            'close': [],
-            'volume': [],
-            'obv': [],
-            'obv_signal': [],
-            'obv_signal_sum': [],
-            'price_diff': [],
-            '30_day_price_diff_avg': [],
-            '30_day_close_trendline': [],
-            'status': []
+            "date": [],
+            "open": [],
+            "high": [],
+            "low": [],
+            "adj_close": [],
+            "close": [],
+            "volume": [],
+            "obv": [],
+            "obv_signal": [],
+            "obv_signal_sum": [],
+            "price_diff": [],
+            "30_day_price_diff_avg": [],
+            "30_day_close_trendline": [],
+            "status": []
         }
 
         for ds in day_symbols:
-            data['date'].append(ds.date)
-            data['open'].append(ds.open)
-            data['high'].append(ds.high)
-            data['low'].append(ds.low)
-            data['adj_close'].append(ds.adj_close)
-            data['close'].append(ds.close)
-            data['volume'].append(ds.volume)
-            data['obv'].append(ds.obv)
-            data['obv_signal'].append(ds.obv_signal)
-            data['obv_signal_sum'].append(ds.obv_signal_sum)
-            data['price_diff'].append(ds.price_diff)
-            data['30_day_price_diff_avg'].append(ds.thirty_price_diff)
-            data['30_day_close_trendline'].append(ds.thirty_close_trend)
-            data['status'].append(ds.status)
+            data["date"].append(ds.date)
+            data["open"].append(ds.open)
+            data["high"].append(ds.high)
+            data["low"].append(ds.low)
+            data["adj_close"].append(ds.adj_close)
+            data["close"].append(ds.close)
+            data["volume"].append(ds.volume)
+            data["obv"].append(ds.obv)
+            data["obv_signal"].append(ds.obv_signal)
+            data["obv_signal_sum"].append(ds.obv_signal_sum)
+            data["price_diff"].append(ds.price_diff)
+            data["30_day_price_diff_avg"].append(ds.thirty_price_diff)
+            data["30_day_close_trendline"].append(ds.thirty_close_trend)
+            data["status"].append(ds.status)
 
         res = pd.DataFrame(data)
 
@@ -67,10 +69,10 @@ def recalculate_predictions_for_symbol(symbol_id):
         return f"Recalculated predictions for {symbol.symbol}"
 
     except Symbol.DoesNotExist:
-        logger.error(f"Symbol with id {symbol_id} not found")
+        logger.exception(f"Symbol with id {symbol_id} not found")
         return "Symbol not found"
     except Exception as e:
-        logger.error(f"Error recalculating predictions for symbol {symbol_id}: {e}")
+        logger.exception(f"Error recalculating predictions for symbol {symbol_id}: {e}")
         return f"Error: {e}"
 
 
@@ -91,7 +93,7 @@ def recalculate_all_predictions():
             dispatched_count += 1
             logger.info(f"Dispatched recalculation for {symbol.symbol} ({dispatched_count}/{total_symbols})")
         except Exception as e:
-            logger.error(f"Error dispatching recalculation for {symbol.symbol}: {e}")
+            logger.exception(f"Error dispatching recalculation for {symbol.symbol}: {e}")
 
     logger.info(f"Dispatched {dispatched_count} recalculation tasks")
     return f"Dispatched {dispatched_count} recalculation tasks"

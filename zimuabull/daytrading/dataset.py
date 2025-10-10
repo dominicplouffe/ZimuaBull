@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import List, Optional, Sequence, Tuple
 
 import pandas as pd
 
 from zimuabull.models import FeatureSnapshot
+
 from .constants import FEATURE_VERSION, TARGET_COLUMN
 
 
@@ -18,11 +19,11 @@ class Dataset:
 
 
 def load_snapshots(
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     feature_version: str = FEATURE_VERSION,
     require_labels: bool = True,
-) -> List[FeatureSnapshot]:
+) -> list[FeatureSnapshot]:
     qs = FeatureSnapshot.objects.filter(feature_version=feature_version)
     if start_date:
         qs = qs.filter(trade_date__gte=start_date)
@@ -64,7 +65,8 @@ def build_dataset(
     metadata_df = pd.DataFrame(meta_rows)
 
     if TARGET_COLUMN in features_df.columns:
-        raise ValueError(f"Feature column {TARGET_COLUMN} should not exist in features dictionary")
+        msg = f"Feature column {TARGET_COLUMN} should not exist in features dictionary"
+        raise ValueError(msg)
 
     targets = metadata_df[TARGET_COLUMN] if TARGET_COLUMN in metadata_df else metadata_df["intraday_return"]
 
@@ -79,8 +81,8 @@ def build_dataset(
 
 
 def load_dataset(
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     feature_version: str = FEATURE_VERSION,
     require_labels: bool = True,
     drop_na: bool = True,

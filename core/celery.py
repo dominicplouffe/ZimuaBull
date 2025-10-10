@@ -4,7 +4,7 @@ import os
 # channels, as the channels require models, which require settings, which...
 # you get the idea.
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
-import django  # noqa
+import django
 
 django.setup()
 

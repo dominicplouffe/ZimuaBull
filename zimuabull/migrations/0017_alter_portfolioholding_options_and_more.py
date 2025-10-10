@@ -6,27 +6,27 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('zimuabull', '0016_portfolio_transactions'),
+        ("zimuabull", "0016_portfolio_transactions"),
     ]
 
     operations = [
         migrations.AlterModelOptions(
-            name='portfolioholding',
-            options={'ordering': ['-first_purchase_date']},
+            name="portfolioholding",
+            options={"ordering": ["-first_purchase_date"]},
         ),
         migrations.RenameIndex(
-            model_name='portfoliotransaction',
-            new_name='zimuabull_p_portfol_580aae_idx',
-            old_name='zimuabull_p_portfol_idx',
+            model_name="portfoliotransaction",
+            new_name="zimuabull_p_portfol_580aae_idx",
+            old_name="zimuabull_p_portfol_idx",
         ),
         migrations.RenameIndex(
-            model_name='portfoliotransaction',
-            new_name='zimuabull_p_symbol__225cd4_idx',
-            old_name='zimuabull_p_symbol_idx',
+            model_name="portfoliotransaction",
+            new_name="zimuabull_p_symbol__225cd4_idx",
+            old_name="zimuabull_p_symbol_idx",
         ),
         migrations.AlterField(
-            model_name='portfolioholding',
-            name='first_purchase_date',
+            model_name="portfolioholding",
+            name="first_purchase_date",
             field=models.DateField(),
         ),
     ]

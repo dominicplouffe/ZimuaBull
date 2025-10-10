@@ -1,8 +1,9 @@
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from celery import shared_task
 from django.utils import timezone
+
+from celery import shared_task
 
 from zimuabull.daytrading.backtest import run_backtest
 from zimuabull.daytrading.constants import (

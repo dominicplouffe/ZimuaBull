@@ -6,18 +6,18 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('zimuabull', '0020_make_exchange_required'),
+        ("zimuabull", "0020_make_exchange_required"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='symbol',
-            name='latest_price',
+            model_name="symbol",
+            name="latest_price",
             field=models.DecimalField(blank=True, decimal_places=2, max_digits=12, null=True),
         ),
         migrations.AddField(
-            model_name='symbol',
-            name='price_updated_at',
+            model_name="symbol",
+            name="price_updated_at",
             field=models.DateTimeField(blank=True, null=True),
         ),
     ]

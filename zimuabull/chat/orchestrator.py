@@ -1,9 +1,9 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from django.conf import settings
-from django.utils import timezone
+
 from openai import OpenAI, OpenAIError
 
 from .tools import ChatToolset, ToolExecutionError, aggregate_tool_results
@@ -32,7 +32,8 @@ Guidelines:
 class ChatOrchestrator:
     def __init__(self):
         if not settings.OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY is not configured.")
+            msg = "OPENAI_API_KEY is not configured."
+            raise RuntimeError(msg)
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = settings.OPENAI_MODEL
 
@@ -41,13 +42,13 @@ class ChatOrchestrator:
         user,
         conversation,
         user_message: str,
-        context: Optional[Dict[str, Any]] = None,
-        status_callback: Optional[Any] = None,
-    ) -> Dict[str, Any]:
+        context: dict[str, Any] | None = None,
+        status_callback: Any | None = None,
+    ) -> dict[str, Any]:
         context = context or {}
         toolset = ChatToolset(user=user)
-        tool_results: List[Dict[str, Any]] = []
-        status_updates: List[str] = []
+        tool_results: list[dict[str, Any]] = []
+        status_updates: list[str] = []
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 

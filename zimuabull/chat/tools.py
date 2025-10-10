@@ -1,12 +1,10 @@
-import json
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
+
+from django.utils import timezone
 
 import pandas as pd
-from django.db.models import Sum
-from django.utils import timezone
 
 from zimuabull.models import DaySymbol, Portfolio, PortfolioHolding, Symbol
 
@@ -15,9 +13,9 @@ class ToolExecutionError(Exception):
     """Raised when a tool execution cannot be completed."""
 
 
-def _resolve_symbol(symbol_code: str, exchange_code: Optional[str] = None) -> Tuple[Symbol, List[str]]:
+def _resolve_symbol(symbol_code: str, exchange_code: str | None = None) -> tuple[Symbol, list[str]]:
     qs = Symbol.objects.filter(symbol__iexact=symbol_code)
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     if exchange_code:
         qs = qs.filter(exchange__code__iexact=exchange_code)
@@ -37,7 +35,7 @@ def _resolve_symbol(symbol_code: str, exchange_code: Optional[str] = None) -> Tu
     return qs.first(), warnings
 
 
-def _price_history(symbol: Symbol, start: Optional[date] = None, end: Optional[date] = None, lookback_days: Optional[int] = 90) -> List[Dict[str, Any]]:
+def _price_history(symbol: Symbol, start: date | None = None, end: date | None = None, lookback_days: int | None = 90) -> list[dict[str, Any]]:
     if start and end is None:
         end = start
 
@@ -71,7 +69,7 @@ def _price_history(symbol: Symbol, start: Optional[date] = None, end: Optional[d
     ]
 
 
-def _symbol_stats(symbol: Symbol, history: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _symbol_stats(symbol: Symbol, history: list[dict[str, Any]]) -> dict[str, Any]:
     if not history:
         return {}
 
@@ -96,7 +94,7 @@ def _symbol_stats(symbol: Symbol, history: List[Dict[str, Any]]) -> Dict[str, An
     }
 
 
-def _portfolio_holdings_snapshot(portfolio: Portfolio) -> List[Dict[str, Any]]:
+def _portfolio_holdings_snapshot(portfolio: Portfolio) -> list[dict[str, Any]]:
     holdings = PortfolioHolding.objects.filter(portfolio=portfolio, status="ACTIVE").select_related("symbol", "symbol__exchange")
     snapshot = []
     for holding in holdings:
@@ -120,8 +118,8 @@ def _portfolio_holdings_snapshot(portfolio: Portfolio) -> List[Dict[str, Any]]:
     return snapshot
 
 
-def _portfolio_sector_breakdown(holdings: List[Dict[str, Any]]) -> Dict[str, float]:
-    breakdown: Dict[str, float] = {}
+def _portfolio_sector_breakdown(holdings: list[dict[str, Any]]) -> dict[str, float]:
+    breakdown: dict[str, float] = {}
     total = sum(h["market_value"] for h in holdings)
     if total == 0:
         return {}
@@ -131,7 +129,7 @@ def _portfolio_sector_breakdown(holdings: List[Dict[str, Any]]) -> Dict[str, flo
     return {sector: round(value / total * 100, 2) for sector, value in breakdown.items()}
 
 
-def _apply_portfolio_scenario(holdings: List[Dict[str, Any]], adjustments: Dict[str, float]) -> Dict[str, Any]:
+def _apply_portfolio_scenario(holdings: list[dict[str, Any]], adjustments: dict[str, float]) -> dict[str, Any]:
     new_value = 0.0
     original_value = sum(h["market_value"] for h in holdings)
     impact_rows = []
@@ -167,7 +165,7 @@ def _ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
 
 
-def _backtest_ema_crossover(df: pd.DataFrame, fast: int, slow: int, initial_capital: float) -> Dict[str, Any]:
+def _backtest_ema_crossover(df: pd.DataFrame, fast: int, slow: int, initial_capital: float) -> dict[str, Any]:
     df = df.copy()
     df["fast_ema"] = _ema(df["close"], fast)
     df["slow_ema"] = _ema(df["close"], slow)
@@ -204,7 +202,7 @@ def _backtest_ema_crossover(df: pd.DataFrame, fast: int, slow: int, initial_capi
     }
 
 
-def _rule_based_simulation(df: pd.DataFrame, buy_threshold: Decimal, sell_threshold: Decimal, buy_shares: int, bankroll: Decimal) -> Dict[str, Any]:
+def _rule_based_simulation(df: pd.DataFrame, buy_threshold: Decimal, sell_threshold: Decimal, buy_shares: int, bankroll: Decimal) -> dict[str, Any]:
     cash = bankroll
     shares = Decimal("0")
     trades = []
@@ -262,7 +260,7 @@ class ChatToolset:
     def __init__(self, user):
         self.user = user
 
-    def tool_specs(self) -> List[Dict[str, Any]]:
+    def tool_specs(self) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -401,7 +399,7 @@ class ChatToolset:
             },
         ]
 
-    def execute(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "get_symbol_overview":
             return self._symbol_overview(**arguments)
         if name == "compare_symbols":
@@ -414,11 +412,12 @@ class ChatToolset:
             return self._run_backtest(**arguments)
         if name == "simulate_rule_based_strategy":
             return self._simulate_rule_strategy(**arguments)
-        raise ToolExecutionError(f"Unknown tool {name}")
+        msg = f"Unknown tool {name}"
+        raise ToolExecutionError(msg)
 
     # Tool implementations --------------------------------------------------
 
-    def _symbol_overview(self, symbol: str, exchange: Optional[str] = None, include_history: bool = False, history_days: int = 30) -> Dict[str, Any]:
+    def _symbol_overview(self, symbol: str, exchange: str | None = None, include_history: bool = False, history_days: int = 30) -> dict[str, Any]:
         sym, warnings = _resolve_symbol(symbol, exchange)
         history = _price_history(sym, lookback_days=history_days)
         stats = _symbol_stats(sym, history)
@@ -437,9 +436,9 @@ class ChatToolset:
         }
         return {"type": "symbol_overview", "data": payload, "warnings": warnings}
 
-    def _compare_symbols(self, symbols: List[Dict[str, Any]], include_history: bool = False, history_days: int = 30) -> Dict[str, Any]:
+    def _compare_symbols(self, symbols: list[dict[str, Any]], include_history: bool = False, history_days: int = 30) -> dict[str, Any]:
         results = []
-        warnings: List[str] = []
+        warnings: list[str] = []
         for entry in symbols:
             sym_code = entry.get("symbol")
             exchange = entry.get("exchange")
@@ -459,7 +458,7 @@ class ChatToolset:
 
         return {"type": "symbol_comparison", "data": {"symbols": results}, "warnings": warnings}
 
-    def _portfolio_overview(self, portfolio_ids: Optional[List[int]] = None) -> Dict[str, Any]:
+    def _portfolio_overview(self, portfolio_ids: list[int] | None = None) -> dict[str, Any]:
         portfolios = Portfolio.objects.filter(user=self.user, is_active=True)
         if portfolio_ids:
             portfolios = portfolios.filter(id__in=portfolio_ids)
@@ -481,12 +480,13 @@ class ChatToolset:
             )
         return {"type": "portfolio_overview", "data": {"portfolios": data}, "warnings": []}
 
-    def _portfolio_scenario(self, adjustments: List[Dict[str, Any]], portfolio_id: Optional[int] = None) -> Dict[str, Any]:
+    def _portfolio_scenario(self, adjustments: list[dict[str, Any]], portfolio_id: int | None = None) -> dict[str, Any]:
         portfolios = Portfolio.objects.filter(user=self.user, is_active=True)
         if portfolio_id:
             portfolios = portfolios.filter(id=portfolio_id)
         if not portfolios.exists():
-            raise ToolExecutionError("No portfolios found for scenario analysis.")
+            msg = "No portfolios found for scenario analysis."
+            raise ToolExecutionError(msg)
 
         adjustments_map = {}
         for adj in adjustments:
@@ -508,17 +508,19 @@ class ChatToolset:
             )
         return {"type": "portfolio_scenario", "data": {"results": results}, "warnings": []}
 
-    def _run_backtest(self, symbol: str, start_date: str, end_date: str, strategy: Dict[str, Any], exchange: Optional[str] = None, initial_capital: float = 10000) -> Dict[str, Any]:
+    def _run_backtest(self, symbol: str, start_date: str, end_date: str, strategy: dict[str, Any], exchange: str | None = None, initial_capital: float = 10000) -> dict[str, Any]:
         sym, warnings = _resolve_symbol(symbol, exchange)
         try:
             start = datetime.strptime(start_date, "%Y-%m-%d").date()
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
         except ValueError as exc:
-            raise ToolExecutionError("start_date and end_date must be in YYYY-MM-DD format") from exc
+            msg = "start_date and end_date must be in YYYY-MM-DD format"
+            raise ToolExecutionError(msg) from exc
 
         history = _price_history(sym, start=start, end=end)
         if not history:
-            raise ToolExecutionError("No price data available for the selected period.")
+            msg = "No price data available for the selected period."
+            raise ToolExecutionError(msg)
 
         df = pd.DataFrame(history)
         df["date"] = pd.to_datetime(df["date"])
@@ -531,13 +533,15 @@ class ChatToolset:
             result.update({"symbol": sym.symbol, "exchange": sym.exchange.code, "strategy": strategy})
             return {"type": "backtest", "data": result, "warnings": warnings}
 
-        raise ToolExecutionError(f"Unsupported strategy type: {strategy_type}")
+        msg = f"Unsupported strategy type: {strategy_type}"
+        raise ToolExecutionError(msg)
 
-    def _simulate_rule_strategy(self, symbol: str, buy_threshold: float, sell_threshold: float, buy_shares: int, exchange: Optional[str] = None, initial_capital: float = 1000, history_days: int = 90) -> Dict[str, Any]:
+    def _simulate_rule_strategy(self, symbol: str, buy_threshold: float, sell_threshold: float, buy_shares: int, exchange: str | None = None, initial_capital: float = 1000, history_days: int = 90) -> dict[str, Any]:
         sym, warnings = _resolve_symbol(symbol, exchange)
         history = _price_history(sym, lookback_days=history_days)
         if len(history) < 5:
-            raise ToolExecutionError("Not enough historical data to simulate strategy.")
+            msg = "Not enough historical data to simulate strategy."
+            raise ToolExecutionError(msg)
 
         df = pd.DataFrame(history)
         df["date"] = pd.to_datetime(df["date"])
@@ -552,8 +556,8 @@ class ChatToolset:
         return {"type": "simulation", "data": result, "warnings": warnings}
 
 
-def aggregate_tool_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    aggregated: Dict[str, Any] = {
+def aggregate_tool_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    aggregated: dict[str, Any] = {
         "symbols": [],
         "comparisons": [],
         "portfolios": [],

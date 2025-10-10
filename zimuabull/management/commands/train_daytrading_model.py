@@ -25,10 +25,12 @@ class Command(BaseCommand):
                 end_date=datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None,
             )
         except ValueError as exc:
-            raise CommandError(f"Invalid date format: {exc}") from exc
+            msg = f"Invalid date format: {exc}"
+            raise CommandError(msg) from exc
 
         if len(dataset.features) < min_rows:
-            raise CommandError(f"Insufficient samples ({len(dataset.features)}). Need at least {min_rows}.")
+            msg = f"Insufficient samples ({len(dataset.features)}). Need at least {min_rows}."
+            raise CommandError(msg)
 
         model, metrics, feature_columns = train_regression_model(dataset)
         save_path = save_model(model, metrics, feature_columns)

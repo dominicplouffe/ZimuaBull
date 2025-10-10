@@ -1,8 +1,11 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from zimuabull.tasks.portfolio_price_update import update_portfolio_symbols_prices, is_market_open
-from zimuabull.models import Portfolio, PortfolioHolding, Symbol, Exchange
+
 import yfinance as yf
+
+from zimuabull.models import Portfolio, PortfolioHolding
+from zimuabull.tasks.portfolio_price_update import is_market_open
+
 
 def resolve_tsx_ticker(symbol, exchange_code):
     """
@@ -11,30 +14,30 @@ def resolve_tsx_ticker(symbol, exchange_code):
     Handles different ticker variations for Canadian stocks
     """
     # If exchange is TSX, always append .TO
-    if exchange_code == 'TSE':
+    if exchange_code == "TSE":
         return f"{symbol}.TO"
 
     return symbol  # For other exchanges, return as-is
 
 class Command(BaseCommand):
-    help = 'Test portfolio price updates manually'
+    help = "Test portfolio price updates manually"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--exchange',
+            "--exchange",
             type=str,
-            help='Specific exchange code to test market status (e.g., TO, NYSE, NASDAQ)'
+            help="Specific exchange code to test market status (e.g., TO, NYSE, NASDAQ)"
         )
         parser.add_argument(
-            '--update',
-            action='store_true',
-            help='Actually update prices in the database'
+            "--update",
+            action="store_true",
+            help="Actually update prices in the database"
         )
 
     def handle(self, *args, **options):
         # Check market status for a specific exchange if provided
-        if options.get('exchange'):
-            market_open = is_market_open(options['exchange'])
+        if options.get("exchange"):
+            market_open = is_market_open(options["exchange"])
             self.stdout.write(self.style.SUCCESS(
                 f"Market status for {options['exchange']}: {'Open' if market_open else 'Closed'}"
             ))
@@ -77,14 +80,11 @@ class Command(BaseCommand):
 
                     # Get price using different methods
                     try:
-                        latest_price = ticker.info.get('regularMarketPrice')
+                        latest_price = ticker.info.get("regularMarketPrice")
                     except Exception:
                         # Fallback to history method if info fails
                         latest_history = ticker.history(period="1d")
-                        if not latest_history.empty:
-                            latest_price = latest_history['Close'].iloc[-1]
-                        else:
-                            latest_price = None
+                        latest_price = latest_history["Close"].iloc[-1] if not latest_history.empty else None
 
                     # Display symbol and current price
                     if latest_price is not None:
@@ -93,7 +93,7 @@ class Command(BaseCommand):
                         ))
 
                         # Update prices if --update flag is set
-                        if options.get('update'):
+                        if options.get("update"):
                             with transaction.atomic():
                                 holding.current_price = latest_price
                                 holding.total_value = holding.quantity * latest_price
@@ -117,6 +117,6 @@ class Command(BaseCommand):
         # Summary
         self.stdout.write("\n" + self.style.SUCCESS("="*50))
         self.stdout.write(self.style.SUCCESS(f"Total Symbols Processed: {total_symbols}"))
-        if options.get('update'):
+        if options.get("update"):
             self.stdout.write(self.style.SUCCESS(f"Symbols Updated: {symbols_updated}"))
             self.stdout.write(self.style.ERROR(f"Update Errors: {update_errors}"))

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Iterable, List, Optional
 from zoneinfo import ZoneInfo
+
+from django.db import transaction
+from django.utils import timezone as dj_timezone
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from django.db import transaction
-from django.utils import timezone as dj_timezone
 
 from zimuabull.daytrading.dataset import build_dataset
 from zimuabull.daytrading.feature_builder import build_feature_snapshot
@@ -50,13 +51,14 @@ class Recommendation:
     features: dict
 
 
-def get_portfolios_for_user(user_id: int) -> List[Portfolio]:
+def get_portfolios_for_user(user_id: int) -> list[Portfolio]:
     portfolios = list(
         Portfolio.objects.filter(user_id=user_id, is_active=True)
         .order_by("created_at")
     )
     if not portfolios:
-        raise ValueError(f"No active portfolio found for user {user_id}.")
+        msg = f"No active portfolio found for user {user_id}."
+        raise ValueError(msg)
     return portfolios
 
 
@@ -71,7 +73,7 @@ def _yf_symbol(symbol: Symbol) -> str:
     return symbol.symbol
 
 
-def fetch_live_price(symbol: Symbol) -> Optional[float]:
+def fetch_live_price(symbol: Symbol) -> float | None:
     try:
         ticker = yf.Ticker(_yf_symbol(symbol))
         live_price = ticker.fast_info.get("lastPrice")
@@ -87,7 +89,7 @@ def fetch_live_price(symbol: Symbol) -> Optional[float]:
         return None
 
 
-def _calculate_stop_target(entry_price: float, atr: Optional[float], predicted_return: float) -> (float, float):
+def _calculate_stop_target(entry_price: float, atr: float | None, predicted_return: float) -> (float, float):
     if atr is None or np.isnan(atr):
         atr = entry_price * 0.01
     base_stop = max(0.005, atr / entry_price)
@@ -103,7 +105,7 @@ def _sanitize_prediction(value: float) -> float:
     return float(value)
 
 
-def _confidence_score(predicted_return: float, volatility: Optional[float]) -> float:
+def _confidence_score(predicted_return: float, volatility: float | None) -> float:
     if volatility is None or np.isnan(volatility) or volatility == 0:
         return max(0.0, min(100.0, predicted_return * 10000))
     risk_adjusted = predicted_return / max(volatility, 1e-4)
@@ -131,8 +133,8 @@ def generate_recommendations(
     trade_date: date,
     max_positions: int = MAX_RECOMMENDATIONS,
     bankroll: float = DEFAULT_BANKROLL,
-    exchange_filter: Optional[str] = None,
-) -> List[Recommendation]:
+    exchange_filter: str | None = None,
+) -> list[Recommendation]:
     symbols = Symbol.objects.all()
     if exchange_filter:
         symbols = symbols.filter(exchange__code=exchange_filter)
@@ -150,7 +152,7 @@ def generate_recommendations(
 
     dataset_df["predicted_return"] = predictions
 
-    recommendations: List[Recommendation] = []
+    recommendations: list[Recommendation] = []
     for _, row in dataset_df.iterrows():
         symbol_obj = Symbol.objects.get(symbol=row["symbol"], exchange__code=row["exchange"])
         predicted_return = _sanitize_prediction(row["predicted_return"])
@@ -258,11 +260,11 @@ def _create_day_trade_position(
 
 
 def execute_recommendations(
-    recommendations: List[Recommendation],
+    recommendations: list[Recommendation],
     portfolio: Portfolio,
     trade_date: date,
-) -> List[DayTradePosition]:
-    executed_positions: List[DayTradePosition] = []
+) -> list[DayTradePosition]:
+    executed_positions: list[DayTradePosition] = []
     if not recommendations:
         return executed_positions
 
@@ -322,7 +324,7 @@ def execute_recommendations(
     return executed_positions
 
 
-def get_open_day_trade_positions(portfolio: Portfolio, trade_date: Optional[date] = None) -> List[DayTradePosition]:
+def get_open_day_trade_positions(portfolio: Portfolio, trade_date: date | None = None) -> list[DayTradePosition]:
     qs = DayTradePosition.objects.filter(portfolio=portfolio, status=DayTradePositionStatus.OPEN)
     if trade_date:
         qs = qs.filter(trade_date=trade_date)
@@ -350,7 +352,7 @@ def close_position(position: DayTradePosition, exit_price: Decimal, reason: str)
 
 
 def monitor_positions(portfolio: Portfolio):
-    trade_date = dj_timezone.now().astimezone(NY_TZ).date()
+    dj_timezone.now().astimezone(NY_TZ).date()
     positions = get_open_day_trade_positions(portfolio)
     for position in positions:
         live_price = fetch_live_price(position.symbol)
@@ -362,7 +364,7 @@ def monitor_positions(portfolio: Portfolio):
         elif price <= position.stop_price:
             close_position(position, price, "stop_hit")
 
-    open_after = get_open_day_trade_positions(portfolio)
+    get_open_day_trade_positions(portfolio)
     # No re-entry trades during the day; purchases only occur during the morning window
 
 

@@ -6,27 +6,28 @@ Usage: python manage.py populate_sectors [--symbol AAPL] [--exchange NASDAQ]
 """
 
 from django.core.management.base import BaseCommand
-from zimuabull.models import Symbol, Exchange
+
+from zimuabull.models import Exchange, Symbol
 
 
 class Command(BaseCommand):
-    help = 'Populate sector and industry fields for symbols'
+    help = "Populate sector and industry fields for symbols"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--symbol',
+            "--symbol",
             type=str,
-            help='Populate for specific symbol only',
+            help="Populate for specific symbol only",
         )
         parser.add_argument(
-            '--exchange',
+            "--exchange",
             type=str,
-            help='Populate for specific exchange only',
+            help="Populate for specific exchange only",
         )
 
     def handle(self, *args, **options):
-        symbol_filter = options.get('symbol')
-        exchange_filter = options.get('exchange')
+        symbol_filter = options.get("symbol")
+        exchange_filter = options.get("exchange")
 
         # Get symbols to process
         symbols = Symbol.objects.filter(sector__isnull=True)
@@ -56,36 +57,36 @@ class Command(BaseCommand):
 
         # EXAMPLE: Using yfinance (uncomment and install: pip install yfinance)
         import yfinance as yf
-        
+
         processed = 0
         updated = 0
-        
+
         for symbol_obj in symbols:
             processed += 1
             try:
                 ticker = yf.Ticker(symbol_obj.symbol)
                 info = ticker.info
-        
-                sector = info.get('sector')
-                industry = info.get('industry')
-        
+
+                sector = info.get("sector")
+                industry = info.get("industry")
+
                 if sector or industry:
                     symbol_obj.sector = sector
                     symbol_obj.industry = industry
-                    symbol_obj.save(update_fields=['sector', 'industry', 'updated_at'])
+                    symbol_obj.save(update_fields=["sector", "industry", "updated_at"])
                     updated += 1
                     self.stdout.write(f"[{processed}/{total}] {symbol_obj.symbol}: {sector} - {industry}")
                 else:
                     self.stdout.write(f"[{processed}/{total}] {symbol_obj.symbol}: No data available")
-        
+
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"[{processed}/{total}] {symbol_obj.symbol}: Error - {e}"))
-        
+
             # Rate limiting - adjust as needed
             if processed % 10 == 0:
                 import time
                 time.sleep(1)
-        
+
         self.stdout.write(self.style.SUCCESS(f"\nCompleted! {updated}/{processed} symbols updated"))
 
         self.stdout.write("\nExample manual population:")

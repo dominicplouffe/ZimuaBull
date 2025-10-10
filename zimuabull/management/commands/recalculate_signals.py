@@ -8,27 +8,28 @@ Usage:
 """
 
 from django.core.management.base import BaseCommand
+
 from zimuabull.models import Symbol
 
 
 class Command(BaseCommand):
-    help = 'Recalculate trading signals for symbols based on latest predictions and technical indicators'
+    help = "Recalculate trading signals for symbols based on latest predictions and technical indicators"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--exchange',
+            "--exchange",
             type=str,
-            help='Only recalculate signals for symbols on this exchange (e.g., TSE, NASDAQ)',
+            help="Only recalculate signals for symbols on this exchange (e.g., TSE, NASDAQ)",
         )
         parser.add_argument(
-            '--symbol',
+            "--symbol",
             type=str,
-            help='Only recalculate signal for this specific symbol (requires --exchange)',
+            help="Only recalculate signal for this specific symbol (requires --exchange)",
         )
 
     def handle(self, *args, **options):
-        exchange_code = options.get('exchange')
-        symbol_ticker = options.get('symbol')
+        exchange_code = options.get("exchange")
+        symbol_ticker = options.get("symbol")
 
         # Build queryset
         queryset = Symbol.objects.all()
@@ -40,7 +41,7 @@ class Command(BaseCommand):
         if symbol_ticker:
             if not exchange_code:
                 self.stdout.write(
-                    self.style.ERROR('--symbol requires --exchange to be specified')
+                    self.style.ERROR("--symbol requires --exchange to be specified")
                 )
                 return
             queryset = queryset.filter(symbol=symbol_ticker)
@@ -49,7 +50,7 @@ class Command(BaseCommand):
         total_symbols = queryset.count()
 
         if total_symbols == 0:
-            self.stdout.write(self.style.WARNING('No symbols found matching criteria'))
+            self.stdout.write(self.style.WARNING("No symbols found matching criteria"))
             return
 
         self.stdout.write(f"Recalculating signals for {total_symbols} symbols...")
@@ -57,12 +58,12 @@ class Command(BaseCommand):
         updated_count = 0
         error_count = 0
         signal_counts = {
-            'STRONG_BUY': 0,
-            'BUY': 0,
-            'HOLD': 0,
-            'SELL': 0,
-            'STRONG_SELL': 0,
-            'NA': 0
+            "STRONG_BUY": 0,
+            "BUY": 0,
+            "HOLD": 0,
+            "SELL": 0,
+            "STRONG_SELL": 0,
+            "NA": 0
         }
 
         for symbol in queryset:

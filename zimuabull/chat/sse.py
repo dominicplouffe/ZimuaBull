@@ -1,17 +1,20 @@
 import asyncio
 import json
-from typing import Any, AsyncGenerator, Dict
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from django.http import StreamingHttpResponse
+
 from asgiref.sync import sync_to_async
+
 from zimuabull.models import ConversationMessage
 
 
-async def sse_event_stream(orchestrator, user, conversation, message: str, context: Dict[str, Any]) -> AsyncGenerator[str, None]:
+async def sse_event_stream(orchestrator, user, conversation, message: str, context: dict[str, Any]) -> AsyncGenerator[str]:
     """Async generator yielding SSE-formatted chunks with live updates."""
 
     loop = asyncio.get_running_loop()
-    status_queue: "asyncio.Queue[str]" = asyncio.Queue()
+    status_queue: asyncio.Queue[str] = asyncio.Queue()
 
     def status_callback(msg: str) -> None:
         try:
@@ -20,7 +23,7 @@ async def sse_event_stream(orchestrator, user, conversation, message: str, conte
             # Loop may be closed; ignore since stream is ending
             pass
 
-    yield "data: {\"status\": \"started\"}\n\n"
+    yield 'data: {"status": "started"}\n\n'
 
     async def run_orchestrator():
         result = await sync_to_async(orchestrator.run)(user, conversation, message, context, status_callback=status_callback)
@@ -62,7 +65,7 @@ async def sse_event_stream(orchestrator, user, conversation, message: str, conte
     yield "event: end\ndata: {}\n\n"
 
 
-def sse_response(orchestrator, user, conversation, message: str, context: Dict[str, Any]) -> StreamingHttpResponse:
+def sse_response(orchestrator, user, conversation, message: str, context: dict[str, Any]) -> StreamingHttpResponse:
     async def async_stream():
         async for chunk in sse_event_stream(orchestrator, user, conversation, message, context):
             yield chunk

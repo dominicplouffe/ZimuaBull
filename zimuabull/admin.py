@@ -1,5 +1,6 @@
 from django.contrib import admin
-from .models import Exchange, Symbol, DaySymbol
+
+from .models import DaySymbol, Exchange, Symbol
 
 
 # Register your models here.

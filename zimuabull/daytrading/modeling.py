@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
 
 import joblib
 import numpy as np
@@ -20,16 +19,16 @@ def _encode_features(df: pd.DataFrame) -> pd.DataFrame:
     categorical_columns = [col for col in df.columns if df[col].dtype == "object"]
     encoded = pd.get_dummies(df, columns=categorical_columns, drop_first=True)
     encoded = encoded.replace({np.inf: np.nan, -np.inf: np.nan})
-    encoded = encoded.fillna(encoded.median(numeric_only=True))
-    return encoded
+    return encoded.fillna(encoded.median(numeric_only=True))
 
 
-def train_regression_model(dataset: Dataset, n_splits: int = 5) -> Tuple[GradientBoostingRegressor, Dict, pd.Index]:
+def train_regression_model(dataset: Dataset, n_splits: int = 5) -> tuple[GradientBoostingRegressor, dict, pd.Index]:
     features = _encode_features(dataset.features.copy())
     targets = dataset.targets.values
 
     if len(features) < 100:
-        raise ValueError("Not enough samples to train the model (need at least 100).")
+        msg = "Not enough samples to train the model (need at least 100)."
+        raise ValueError(msg)
 
     model = GradientBoostingRegressor(random_state=42, n_estimators=300, max_depth=3, learning_rate=0.05)
 
@@ -53,7 +52,7 @@ def train_regression_model(dataset: Dataset, n_splits: int = 5) -> Tuple[Gradien
         "r2_std": float(np.std(scores)),
         "mae_mean": float(np.mean(mae_scores)),
         "mae_std": float(np.std(mae_scores)),
-        "n_samples": int(len(features)),
+        "n_samples": len(features),
         "n_features": int(features.shape[1]),
         "trained_at": datetime.utcnow().isoformat() + "Z",
     }
@@ -61,7 +60,7 @@ def train_regression_model(dataset: Dataset, n_splits: int = 5) -> Tuple[Gradien
     return model, metrics, features.columns
 
 
-def save_model(model: GradientBoostingRegressor, metrics: Dict, feature_columns: pd.Index) -> Path:
+def save_model(model: GradientBoostingRegressor, metrics: dict, feature_columns: pd.Index) -> Path:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     model_path = MODEL_DIR / MODEL_FILENAME
     meta_path = MODEL_DIR / MODEL_METADATA_FILENAME
@@ -84,7 +83,8 @@ def save_model(model: GradientBoostingRegressor, metrics: Dict, feature_columns:
 def load_model():
     model_path = MODEL_DIR / MODEL_FILENAME
     if not model_path.exists():
-        raise FileNotFoundError(f"Model file not found at {model_path}")
+        msg = f"Model file not found at {model_path}"
+        raise FileNotFoundError(msg)
     payload = joblib.load(model_path)
     return payload["model"], payload["feature_columns"]
 
@@ -94,5 +94,4 @@ def prepare_features_for_inference(df: pd.DataFrame, trained_columns) -> pd.Data
     for col in trained_columns:
         if col not in encoded.columns:
             encoded[col] = 0
-    encoded = encoded[trained_columns]
-    return encoded
+    return encoded[trained_columns]

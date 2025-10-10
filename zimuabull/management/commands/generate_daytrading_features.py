@@ -1,5 +1,4 @@
 from datetime import date, datetime
-from typing import Optional
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -11,7 +10,8 @@ def _parse_date(value: str) -> date:
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
-        raise CommandError(f"Invalid date format '{value}'. Use YYYY-MM-DD.") from exc
+        msg = f"Invalid date format '{value}'. Use YYYY-MM-DD."
+        raise CommandError(msg) from exc
 
 
 class Command(BaseCommand):
@@ -40,7 +40,8 @@ class Command(BaseCommand):
             symbols = symbols.filter(symbol=symbol_code)
 
         if not symbols.exists():
-            raise CommandError("No symbols found for the provided filters.")
+            msg = "No symbols found for the provided filters."
+            raise CommandError(msg)
 
         if date_str:
             trade_date = _parse_date(date_str)
@@ -51,9 +52,10 @@ class Command(BaseCommand):
         if start_date_str:
             start_date = _parse_date(start_date_str)
         else:
-            raise CommandError("Either --date or --start-date must be provided.")
+            msg = "Either --date or --start-date must be provided."
+            raise CommandError(msg)
 
-        end_date: Optional[date] = _parse_date(end_date_str) if end_date_str else date.today()
+        end_date: date | None = _parse_date(end_date_str) if end_date_str else date.today()
 
         processed = backfill_features(
             start_date=start_date,
