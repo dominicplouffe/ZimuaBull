@@ -37,13 +37,14 @@ def run_backtest(
     dataset: Dataset,
     model,
     trained_columns,
+    imputer,
     bankroll: float = DEFAULT_BANKROLL,
     max_positions: int = MAX_RECOMMENDATIONS,
     transaction_cost_bps: float = BACKTEST_TRANSACTION_COST_BPS,
     slippage_bps: float = BACKTEST_SLIPPAGE_BPS,
 ) -> BacktestResult:
     df = dataset.metadata.copy()
-    df["prediction"] = model.predict(prepare_features_for_inference(dataset.features, trained_columns))
+    df["prediction"] = model.predict(prepare_features_for_inference(dataset.features, trained_columns, imputer))
     df["trade_date"] = pd.to_datetime(df["trade_date"])
 
     df = df.sort_values("trade_date")

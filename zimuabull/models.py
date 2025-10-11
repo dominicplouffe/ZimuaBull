@@ -889,3 +889,89 @@ class DayTradePosition(models.Model):
 
     def __str__(self):
         return f"{self.trade_date} {self.symbol.symbol} ({self.status})"
+
+
+class News(models.Model):
+    """
+    Store news articles with deduplication by URL.
+    A single news article can be related to multiple symbols.
+    """
+    url = models.URLField(max_length=500, unique=True)  # Primary deduplication key
+    title = models.CharField(max_length=500)
+    snippet = models.TextField(blank=True, null=True)  # Summary/description
+    source = models.CharField(max_length=200, blank=True, null=True)  # e.g., "Reuters", "Bloomberg"
+    published_date = models.DateTimeField(null=True, blank=True)  # When article was published
+
+    # Thumbnail/image
+    thumbnail_url = models.URLField(max_length=500, blank=True, null=True)
+
+    # Many-to-many with Symbol (a news article can mention multiple stocks)
+    symbols = models.ManyToManyField(Symbol, related_name="news_articles", through="SymbolNews")
+
+    # Track when we fetched/discovered this news
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_date", "-created_at"]
+        verbose_name_plural = "News articles"
+        indexes = [
+            models.Index(fields=["-published_date"]),
+            models.Index(fields=["-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title[:50]} ({self.source})"
+
+
+class SymbolNews(models.Model):
+    """
+    Through table for News <-> Symbol many-to-many relationship.
+    Tracks which symbols are mentioned in which news articles.
+    """
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
+    news = models.ForeignKey(News, on_delete=models.CASCADE)
+
+    # Was this symbol explicitly tagged in the news (vs mentioned in passing)?
+    is_primary = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("symbol", "news")
+        indexes = [
+            models.Index(fields=["symbol", "-created_at"]),
+            models.Index(fields=["news"]),
+        ]
+
+    def __str__(self):
+        return f"{self.symbol.symbol} - {self.news.title[:30]}"
+
+
+class NewsSentiment(models.Model):
+    """
+    Store LLM-generated sentiment analysis for news articles.
+    Uses GPT-4.1-mini (or similar) to analyze sentiment.
+    """
+    news = models.OneToOneField(News, on_delete=models.CASCADE, related_name="sentiment")
+
+    # Sentiment score (1-10, where 1=very negative, 10=very positive)
+    sentiment_score = models.IntegerField()
+
+    # LLM justification (1-3 sentences)
+    justification = models.TextField()
+
+    # LLM description/summary (3 sentences)
+    description = models.TextField()
+
+    # Model used for analysis
+    model_name = models.CharField(max_length=50, default="gpt-4.1-mini")
+
+    # Analysis timestamp
+    analyzed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-analyzed_at"]
+
+    def __str__(self):
+        return f"{self.news.title[:40]} - Sentiment: {self.sentiment_score}/10"

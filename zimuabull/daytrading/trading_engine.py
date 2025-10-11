@@ -37,6 +37,59 @@ from .constants import (
 NY_TZ = ZoneInfo("America/New_York")
 
 
+def is_market_open() -> bool:
+    """
+    Check if US stock market is currently open.
+
+    NYSE/NASDAQ hours: 9:30 AM - 4:00 PM ET, Monday-Friday
+    """
+    from datetime import time
+
+    now = dj_timezone.now().astimezone(NY_TZ)
+
+    # Weekend check
+    if now.weekday() >= 5:
+        return False
+
+    # Market hours check
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+
+    current_time = now.time()
+    if current_time < market_open or current_time >= market_close:
+        return False
+
+    return True
+
+
+# Transaction costs configuration (based on Interactive Brokers tiered pricing)
+def calculate_commission_per_share(monthly_volume: int) -> float:
+    """
+    Calculate commission per share based on monthly volume.
+
+    Monthly Volume (shares) | USD per share
+    ≤ 300,000              | 0.0035
+    300,001 - 3,000,000    | 0.0020
+    3,000,001 - 20,000,000 | 0.0015
+    20,000,001 - 100,000,000 | 0.0010
+    > 100,000,000          | 0.0005
+    """
+    if monthly_volume <= 300_000:
+        return 0.0035
+    if monthly_volume <= 3_000_000:
+        return 0.0020
+    if monthly_volume <= 20_000_000:
+        return 0.0015
+    if monthly_volume <= 100_000_000:
+        return 0.0010
+    return 0.0005
+
+
+# Conservative estimate for low volume (tier 1)
+COMMISSION_PER_SHARE = 0.0035
+SLIPPAGE_BPS = 5  # 0.05% slippage per trade
+
+
 @dataclass
 class Recommendation:
     symbol: Symbol
@@ -89,13 +142,40 @@ def fetch_live_price(symbol: Symbol) -> float | None:
         return None
 
 
-def _calculate_stop_target(entry_price: float, atr: float | None, predicted_return: float) -> (float, float):
+def _calculate_stop_target(
+    entry_price: float,
+    atr: float | None,
+    predicted_return: float,
+    min_rr_ratio: float = 1.5
+) -> tuple[float, float]:
+    """
+    Calculate stop loss and target prices using ATR-based risk management.
+
+    Args:
+        entry_price: Entry price for the position
+        atr: Average True Range (14-day)
+        predicted_return: Model's predicted intraday return
+        min_rr_ratio: Minimum reward:risk ratio (default 1.5:1)
+
+    Returns:
+        (stop_price, target_price) tuple
+    """
+    # Use 2 ATRs for stop loss (industry standard)
     if atr is None or np.isnan(atr):
-        atr = entry_price * 0.01
-    base_stop = max(0.005, atr / entry_price)
-    base_target = max(0.0075, abs(predicted_return) * 1.5)
-    stop_price = entry_price * (1 - base_stop)
-    target_price = entry_price * (1 + base_target)
+        atr = entry_price * 0.015  # 1.5% default ATR
+
+    # Stop distance = 2 * ATR
+    stop_distance = max(0.01, 2 * atr / entry_price)  # Minimum 1% stop
+
+    # Target based on prediction, but enforce minimum R:R ratio
+    target_distance = max(
+        stop_distance * min_rr_ratio,  # Minimum reward:risk ratio
+        abs(predicted_return) * 1.2     # 120% of model prediction
+    )
+
+    stop_price = entry_price * (1 - stop_distance)
+    target_price = entry_price * (1 + target_distance)
+
     return stop_price, target_price
 
 
@@ -106,10 +186,28 @@ def _sanitize_prediction(value: float) -> float:
 
 
 def _confidence_score(predicted_return: float, volatility: float | None) -> float:
+    """
+    Calculate confidence score using Sharpe-like ratio with sigmoid scaling.
+
+    Returns score between 0-100 where:
+    - 50 = neutral prediction
+    - >70 = high confidence
+    - <30 = low confidence
+    """
     if volatility is None or np.isnan(volatility) or volatility == 0:
-        return max(0.0, min(100.0, predicted_return * 10000))
-    risk_adjusted = predicted_return / max(volatility, 1e-4)
-    return max(0.0, min(100.0, risk_adjusted * 1000))
+        # Fallback: simple linear scaling
+        raw_score = predicted_return * 5000  # Scale to reasonable range
+        return max(0.0, min(100.0, 50 + raw_score))
+
+    # Sharpe-like ratio: return divided by risk
+    sharpe_score = predicted_return / max(volatility, 1e-6)
+
+    # Sigmoid scaling to map to 0-100 range
+    # sigmoid(x) = 1 / (1 + exp(-x))
+    # Scale factor of 5 gives good sensitivity
+    confidence = 100 / (1 + np.exp(-5 * sharpe_score))
+
+    return float(confidence)
 
 
 def _prepare_dataset(trade_date: date, symbols: Iterable[Symbol]) -> pd.DataFrame:
@@ -144,10 +242,11 @@ def generate_recommendations(
     if dataset_df.empty:
         return []
 
-    model, trained_columns = load_model()
+    # Load model with imputer (new API)
+    model, trained_columns, imputer = load_model()
 
     feature_df = dataset_df.drop(columns=["symbol", "exchange", "trade_date", "intraday_return"], errors="ignore")
-    encoded = prepare_features_for_inference(feature_df, trained_columns)
+    encoded = prepare_features_for_inference(feature_df, trained_columns, imputer)
     predictions = model.predict(encoded)
 
     dataset_df["predicted_return"] = predictions
@@ -284,10 +383,18 @@ def execute_recommendations(
                 continue
 
             live_price = fetch_live_price(rec.symbol)
-            entry_price = Decimal(str(live_price if live_price else rec.entry_price))
-            shares = rec.shares.quantize(Decimal("0.0001"))
+            base_price = Decimal(str(live_price if live_price else rec.entry_price))
 
-            if portfolio.cash_balance < entry_price * shares:
+            # Apply transaction costs (commission + slippage)
+            commission_cost = Decimal(str(COMMISSION_PER_SHARE)) * rec.shares
+            slippage_cost = base_price * Decimal(str(SLIPPAGE_BPS / 10000.0))
+            entry_price = base_price + slippage_cost
+
+            shares = rec.shares.quantize(Decimal("0.0001"))
+            total_cost = (entry_price * shares) + commission_cost
+
+            # Check if enough cash (including transaction costs)
+            if portfolio.cash_balance < total_cost:
                 continue
 
             rec.symbol.latest_price = entry_price.quantize(Decimal("0.01"))
@@ -352,7 +459,14 @@ def close_position(position: DayTradePosition, exit_price: Decimal, reason: str)
 
 
 def monitor_positions(portfolio: Portfolio):
-    dj_timezone.now().astimezone(NY_TZ).date()
+    """
+    Monitor open positions and close if stop/target is hit.
+    Only runs during market hours.
+    """
+    # Check market hours before fetching prices
+    if not is_market_open():
+        return
+
     positions = get_open_day_trade_positions(portfolio)
     for position in positions:
         live_price = fetch_live_price(position.symbol)
@@ -364,11 +478,11 @@ def monitor_positions(portfolio: Portfolio):
         elif price <= position.stop_price:
             close_position(position, price, "stop_hit")
 
-    get_open_day_trade_positions(portfolio)
     # No re-entry trades during the day; purchases only occur during the morning window
 
 
 def close_all_positions(portfolio: Portfolio):
+    """Close all open positions at end of trading day and create snapshot."""
     positions = get_open_day_trade_positions(portfolio)
     for position in positions:
         live_price = fetch_live_price(position.symbol)
@@ -379,8 +493,7 @@ def close_all_positions(portfolio: Portfolio):
     PortfolioSnapshot.objects.update_or_create(
         portfolio=portfolio,
         date=dj_timezone.now().date(),
-        defaults=
-        {
+        defaults={
             "total_value": Decimal(str(portfolio.current_value())),
             "total_invested": Decimal(str(portfolio.total_invested())),
             "gain_loss": Decimal(str(portfolio.total_gain_loss())),

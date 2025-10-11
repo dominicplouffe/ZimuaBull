@@ -32,11 +32,14 @@ from .models import (
     Favorite,
     MarketIndex,
     MarketIndexData,
+    News,
+    NewsSentiment,
     Portfolio,
     PortfolioHolding,
     PortfolioTransaction,
     SignalHistory,
     Symbol,
+    SymbolNews,
 )
 from .serializers import (
     DayPredictionSerializer,
@@ -44,6 +47,8 @@ from .serializers import (
     DaySymbolSerializer,
     ExchangeSerializer,
     FavoriteSerializer,
+    NewsListSerializer,
+    NewsSerializer,
     PortfolioHoldingSerializer,
     PortfolioSerializer,
     PortfolioSummarySerializer,
@@ -2124,3 +2129,227 @@ class LivePrice(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class NewsViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    News Articles with Sentiment Analysis
+
+    Get news articles related to symbols with optional sentiment analysis.
+
+    **Read-only endpoint** - only GET requests are allowed.
+
+    **Query Parameters:**
+    - `symbol`: Filter by stock symbol (requires `exchange`)
+    - `exchange`: Filter by exchange code
+    - `has_sentiment`: Filter by presence of sentiment analysis (true/false)
+    - `sentiment_min`: Minimum sentiment score (1-10)
+    - `sentiment_max`: Maximum sentiment score (1-10)
+    - `days`: Number of days of history (default: 7)
+    - `page_size`: Number of results per page (default: 30, max: 100)
+
+    **Returns:**
+    Each news article includes:
+    - Article details (title, snippet, source, published date)
+    - Sentiment analysis (if available)
+    - List of related symbols
+
+    **Examples:**
+    - News for a symbol: `/api/news/?symbol=AAPL&exchange=NASDAQ`
+    - Recent news (7 days): `/api/news/?days=7`
+    - Positive sentiment only: `/api/news/?sentiment_min=7`
+    - News with sentiment: `/api/news/?has_sentiment=true`
+    """
+    pagination_class = DaySymbolPagination
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    ordering_fields = ["published_date", "created_at"]
+    ordering = ["-published_date", "-created_at"]
+
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return NewsSerializer
+        return NewsListSerializer
+
+    def get_queryset(self):
+        queryset = News.objects.all().prefetch_related("sentiment", "symbols")
+
+        # Filter by symbol
+        symbol_ticker = self.request.query_params.get("symbol")
+        exchange_code = self.request.query_params.get("exchange")
+
+        if symbol_ticker and exchange_code:
+            # Get news for a specific symbol
+            try:
+                symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
+                queryset = queryset.filter(symbols=symbol)
+            except Symbol.DoesNotExist:
+                return News.objects.none()
+
+        # Filter by date range
+        days = int(self.request.query_params.get("days", 7))
+        if days > 0:
+            from datetime import timedelta
+            from django.utils import timezone
+            cutoff_date = timezone.now() - timedelta(days=days)
+            queryset = queryset.filter(published_date__gte=cutoff_date)
+
+        # Filter by sentiment presence
+        has_sentiment = self.request.query_params.get("has_sentiment")
+        if has_sentiment == "true":
+            queryset = queryset.filter(sentiment__isnull=False)
+        elif has_sentiment == "false":
+            queryset = queryset.filter(sentiment__isnull=True)
+
+        # Filter by sentiment score range
+        sentiment_min = self.request.query_params.get("sentiment_min")
+        if sentiment_min:
+            try:
+                queryset = queryset.filter(sentiment__sentiment_score__gte=int(sentiment_min))
+            except (ValueError, TypeError):
+                pass
+
+        sentiment_max = self.request.query_params.get("sentiment_max")
+        if sentiment_max:
+            try:
+                queryset = queryset.filter(sentiment__sentiment_score__lte=int(sentiment_max))
+            except (ValueError, TypeError):
+                pass
+
+        return queryset
+
+
+class NewsBySymbol(APIView):
+    """
+    Get News for a Specific Symbol
+
+    Convenience endpoint to get recent news for a symbol with sentiment.
+
+    **Query Parameters:**
+    - `symbol`: Stock symbol (required)
+    - `exchange`: Exchange code (required)
+    - `limit`: Number of articles to return (default: 10, max: 50)
+
+    **Returns:**
+    ```json
+    {
+        "symbol": "AAPL",
+        "exchange": "NASDAQ",
+        "news_count": 5,
+        "news": [
+            {
+                "id": 123,
+                "title": "Apple Announces New Product",
+                "snippet": "Apple Inc. today announced...",
+                "source": "Reuters",
+                "published_date": "2025-10-10T14:30:00Z",
+                "sentiment": {
+                    "sentiment_score": 8,
+                    "justification": "Positive product announcement...",
+                    "description": "The news indicates..."
+                },
+                "url": "https://..."
+            }
+        ]
+    }
+    ```
+
+    **Example:** `/api/news/by-symbol/?symbol=AAPL&exchange=NASDAQ&limit=10`
+    """
+
+    def get(self, request):
+        symbol_ticker = request.query_params.get("symbol")
+        exchange_code = request.query_params.get("exchange")
+        limit = int(request.query_params.get("limit", 10))
+        limit = min(limit, 50)  # Max 50 articles
+
+        if not symbol_ticker or not exchange_code:
+            return Response(
+                {"error": "Both 'symbol' and 'exchange' parameters are required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
+        except Symbol.DoesNotExist:
+            return Response(
+                {"error": f"Symbol {symbol_ticker}:{exchange_code} not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Get news for this symbol
+        news_items = News.objects.filter(
+            symbols=symbol
+        ).prefetch_related("sentiment").order_by("-published_date", "-created_at")[:limit]
+
+        serializer = NewsSerializer(news_items, many=True)
+
+        return Response({
+            "symbol": symbol.symbol,
+            "exchange": symbol.exchange.code,
+            "company_name": symbol.name,
+            "news_count": len(news_items),
+            "news": serializer.data
+        })
+
+
+class AnalyzeNewsSentiment(APIView):
+    """
+    Trigger Sentiment Analysis for News
+
+    Manually trigger sentiment analysis for news articles.
+
+    **POST Body:**
+    ```json
+    {
+        "news_id": 123  // Optional - analyze specific article, or omit to analyze all pending
+    }
+    ```
+
+    **Returns:**
+    ```json
+    {
+        "message": "Sentiment analysis task queued",
+        "task_id": "abc-123-def-456"
+    }
+    ```
+
+    **Example:** `POST /api/news/analyze-sentiment/` with `{"news_id": 123}`
+    """
+
+    def post(self, request):
+        news_id = request.data.get("news_id")
+
+        # Trigger the Celery task
+        from zimuabull.tasks.news_sentiment import analyze_news_sentiment
+
+        if news_id:
+            # Verify news exists
+            try:
+                news = News.objects.get(id=news_id)
+            except News.DoesNotExist:
+                return Response(
+                    {"error": f"News article {news_id} not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            task = analyze_news_sentiment.delay(news_id=news_id)
+            return Response({
+                "message": f"Sentiment analysis queued for news article {news_id}",
+                "task_id": str(task.id),
+                "news_title": news.title
+            })
+        else:
+            # Analyze all pending news
+            pending_count = News.objects.filter(sentiment__isnull=True).count()
+
+            if pending_count == 0:
+                return Response({
+                    "message": "No news articles need sentiment analysis"
+                })
+
+            task = analyze_news_sentiment.delay()
+            return Response({
+                "message": f"Sentiment analysis queued for {pending_count} news articles",
+                "task_id": str(task.id),
+                "pending_count": pending_count
+            })

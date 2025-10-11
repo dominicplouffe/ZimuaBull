@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AddFavorite,
+    AnalyzeNewsSentiment,
     BacktestStrategy,
     ChatWithLLM,
     CompareSymbols,
@@ -18,6 +19,8 @@ from .views import (
     LivePrice,
     LLMContext,
     MarketBenchmarks,
+    NewsBySymbol,
+    NewsViewSet,
     PortfolioHoldingViewSet,
     PortfolioSummary,
     PortfolioTransactionViewSet,
@@ -42,6 +45,7 @@ router.register(r"symbol-search", SymbolSearch, basename="symbol-search")
 router.register(r"portfolios", PortfolioViewSet, basename="portfolios")
 router.register(r"holdings", PortfolioHoldingViewSet, basename="holdings")
 router.register(r"transactions", PortfolioTransactionViewSet, basename="transactions")
+router.register(r"news", NewsViewSet, basename="news")
 
 urlpatterns = [
     path("api/", include(router.urls)),
@@ -66,4 +70,7 @@ urlpatterns = [
     path("api/day-trading-recommendations/", DayTradingRecommendations.as_view(), name="day-trading-recommendations"),
     # Live Price
     path("api/live-price/", LivePrice.as_view(), name="live-price"),
+    # News
+    path("api/news/by-symbol/", NewsBySymbol.as_view(), name="news-by-symbol"),
+    path("api/news/analyze-sentiment/", AnalyzeNewsSentiment.as_view(), name="analyze-news-sentiment"),
 ]
