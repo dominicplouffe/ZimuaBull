@@ -300,7 +300,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "fetch_news_for_active_symbols": {
         "task": "zimuabull.tasks.news_sentiment.fetch_and_analyze_news_task",
-        "schedule": crontab(hour="9-16", minute="*/30", day_of_week="1-5"),  # Every 30 min during market hours
+        "schedule": crontab(minute="*/5"),  # Every 5 minutes, 24/7
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_weekly_model_refresh": {

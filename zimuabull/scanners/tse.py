@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -24,7 +24,7 @@ class BaseScanner:
         self.suffix = EXCHANGES[exchange.code].get("suffix", None)
 
     def most_recent_trading_day(self):
-        dt = datetime.now(tz=UTC).date()
+        dt = datetime.now(tz=timezone.utc).date()
 
         # If today is a weekend, then we need to go back to the most recent Friday
         if dt.weekday() == 5:
@@ -69,7 +69,7 @@ class BaseScanner:
                 close = float(row["Close"])
                 volume = int(row["Volume"])
 
-                if dt < datetime.now(tz=UTC).date() - timedelta(days=365):
+                if dt < datetime.now(tz=timezone.utc).date() - timedelta(days=365):
                     continue
 
                 data["date"].append(dt)
