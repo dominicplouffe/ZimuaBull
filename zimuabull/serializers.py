@@ -250,9 +250,9 @@ class NewsSerializer(serializers.ModelSerializer):
 
 
 class NewsListSerializer(serializers.ModelSerializer):
-    """Lightweight serializer for news list views (without full sentiment details)"""
-    sentiment_score = serializers.SerializerMethodField()
-    symbol_count = serializers.SerializerMethodField()
+    """Serializer for news list views with full sentiment and symbols"""
+    sentiment = NewsSentimentSerializer(read_only=True)
+    symbols = serializers.SerializerMethodField()
 
     class Meta:
         model = News
@@ -264,17 +264,19 @@ class NewsListSerializer(serializers.ModelSerializer):
             "source",
             "published_date",
             "thumbnail_url",
-            "sentiment_score",
-            "symbol_count",
+            "sentiment",
+            "symbols",
             "created_at",
         ]
 
-    def get_sentiment_score(self, obj):
-        """Return just the sentiment score if available"""
-        if hasattr(obj, "sentiment"):
-            return obj.sentiment.sentiment_score
-        return None
-
-    def get_symbol_count(self, obj):
-        """Return count of symbols mentioned in this news"""
-        return obj.symbols.count()
+    def get_symbols(self, obj):
+        """Return list of symbol tickers mentioned in this news"""
+        symbol_news = SymbolNews.objects.filter(news=obj).select_related("symbol", "symbol__exchange")
+        return [
+            {
+                "symbol": sn.symbol.symbol,
+                "exchange": sn.symbol.exchange.code,
+                "is_primary": sn.is_primary,
+            }
+            for sn in symbol_news
+        ]

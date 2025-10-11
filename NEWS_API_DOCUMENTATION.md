@@ -62,8 +62,25 @@ GET /api/news/?days=3&has_sentiment=true&page_size=20
       "source": "Reuters",
       "published_date": "2025-10-11T18:05:18Z",
       "thumbnail_url": "https://image-url.com/thumbnail.jpg",
-      "sentiment_score": 8,
-      "symbol_count": 2,
+      "sentiment": {
+        "sentiment_score": 8,
+        "justification": "The article highlights positive product announcements...",
+        "description": "Apple has announced a new product line...",
+        "model_name": "gpt-4o-mini",
+        "analyzed_at": "2025-10-11T18:10:15Z"
+      },
+      "symbols": [
+        {
+          "symbol": "AAPL",
+          "exchange": "NASDAQ",
+          "is_primary": true
+        },
+        {
+          "symbol": "MSFT",
+          "exchange": "NASDAQ",
+          "is_primary": false
+        }
+      ],
       "created_at": "2025-10-11T18:10:00Z"
     },
     {
@@ -74,8 +91,20 @@ GET /api/news/?days=3&has_sentiment=true&page_size=20
       "source": "Bloomberg",
       "published_date": "2025-10-11T16:30:00Z",
       "thumbnail_url": "https://image-url.com/thumbnail2.jpg",
-      "sentiment_score": 9,
-      "symbol_count": 5,
+      "sentiment": {
+        "sentiment_score": 9,
+        "justification": "Strong economic data indicates robust market conditions...",
+        "description": "Markets experienced a rally following positive economic indicators...",
+        "model_name": "gpt-4o-mini",
+        "analyzed_at": "2025-10-11T16:35:15Z"
+      },
+      "symbols": [
+        {
+          "symbol": "SPY",
+          "exchange": "NYSE",
+          "is_primary": true
+        }
+      ],
       "created_at": "2025-10-11T16:35:00Z"
     }
   ]
@@ -90,8 +119,16 @@ GET /api/news/?days=3&has_sentiment=true&page_size=20
 - `source`: News source (e.g., Reuters, Bloomberg)
 - `published_date`: When the article was published (ISO 8601)
 - `thumbnail_url`: Article image/thumbnail URL
-- `sentiment_score`: AI sentiment score (1-10, null if not analyzed)
-- `symbol_count`: Number of symbols related to this article
+- `sentiment`: Full sentiment analysis object (null if not analyzed)
+  - `sentiment_score`: Score from 1 (very negative) to 10 (very positive)
+  - `justification`: AI explanation for the sentiment score (1-3 sentences)
+  - `description`: AI summary of the article's market impact (3 sentences)
+  - `model_name`: AI model used for analysis
+  - `analyzed_at`: When sentiment analysis was performed
+- `symbols`: Array of related stock symbols
+  - `symbol`: Stock ticker (e.g., AAPL)
+  - `exchange`: Exchange code (e.g., NASDAQ)
+  - `is_primary`: Whether this is the primary symbol mentioned
 - `created_at`: When the article was added to our database
 
 ---

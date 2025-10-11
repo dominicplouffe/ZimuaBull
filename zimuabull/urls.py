@@ -48,6 +48,10 @@ router.register(r"transactions", PortfolioTransactionViewSet, basename="transact
 router.register(r"news", NewsViewSet, basename="news")
 
 urlpatterns = [
+    # News - MUST come before router.urls to avoid conflicts
+    path("api/news/by-symbol/", NewsBySymbol.as_view(), name="news-by-symbol"),
+    path("api/news/analyze-sentiment/", AnalyzeNewsSentiment.as_view(), name="analyze-news-sentiment"),
+    # Router URLs
     path("api/", include(router.urls)),
     path("api/favorites", FavoriteList.as_view(), name="favorites"),
     path("api/favorites/add", AddFavorite.as_view(), name="add_favorite"),
@@ -70,7 +74,4 @@ urlpatterns = [
     path("api/day-trading-recommendations/", DayTradingRecommendations.as_view(), name="day-trading-recommendations"),
     # Live Price
     path("api/live-price/", LivePrice.as_view(), name="live-price"),
-    # News
-    path("api/news/by-symbol/", NewsBySymbol.as_view(), name="news-by-symbol"),
-    path("api/news/analyze-sentiment/", AnalyzeNewsSentiment.as_view(), name="analyze-news-sentiment"),
 ]
