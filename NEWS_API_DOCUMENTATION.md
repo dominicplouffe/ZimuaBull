@@ -9,7 +9,7 @@ The News API provides access to financial news articles with AI-powered sentimen
 - AI sentiment analysis (1-10 scale)
 - Multi-symbol support (one article can relate to multiple stocks)
 - Flexible filtering by date, sentiment, and symbols
-- Automatic updates every 30 minutes during market hours
+- Automatic updates every 5 minutes, 24/7
 
 ---
 
@@ -442,7 +442,7 @@ The sentiment analysis uses a 1-10 scale:
 ## Data Update Frequency
 
 **News Fetching:**
-- Automatic: Every 30 minutes during market hours (9 AM - 4 PM, weekdays)
+- Automatic: Every 5 minutes, 24/7
 - Manual: Via management command or when users request specific symbols
 
 **Sentiment Analysis:**
