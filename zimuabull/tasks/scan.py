@@ -1,9 +1,11 @@
+import logging
+
+from celery import shared_task
+
 from zimuabull.scanners import tse
 from zimuabull.scanners.nasdaq import NASDAQScanner
 from zimuabull.scanners.nyse import NYSEScanner
-from zimuabull.tasks.download_symbols import download_tse, download_nasdaq, download_nyse
-from celery import shared_task
-import logging
+from zimuabull.tasks.download_symbols import download_nasdaq, download_nyse, download_tse
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +32,15 @@ def scan():
     # Update technical indicators for recently updated symbols
     logger.info("Calculating technical indicators for recently updated data...")
     try:
-        from zimuabull.models import DaySymbol, Symbol
         from datetime import datetime, timedelta
+
+        from zimuabull.models import DaySymbol, Symbol
 
         # Get symbols that were updated in the last 2 days
         recent_date = datetime.now().date() - timedelta(days=2)
         recent_symbols = DaySymbol.objects.filter(
             updated_at__gte=recent_date
-        ).values_list('symbol_id', flat=True).distinct()
+        ).values_list("symbol_id", flat=True).distinct()
 
         symbols = Symbol.objects.filter(id__in=recent_symbols)
         logger.info(f"Found {symbols.count()} symbols with recent updates")
@@ -49,7 +52,7 @@ def scan():
                 symbol=symbol,
                 date__gte=recent_date,
                 rsi__isnull=True
-            ).order_by('date')
+            ).order_by("date")
 
             for day in recent_days:
                 # Calculate RSI
@@ -71,19 +74,20 @@ def scan():
                     updated = True
 
                 if updated:
-                    day.save(update_fields=['rsi', 'macd', 'macd_signal', 'macd_histogram', 'updated_at'])
+                    day.save(update_fields=["rsi", "macd", "macd_signal", "macd_histogram", "updated_at"])
                     indicators_updated += 1
 
         logger.info(f"Updated technical indicators for {indicators_updated} records")
 
     except Exception as e:
-        logger.error(f"Error updating technical indicators: {e}")
+        logger.exception(f"Error updating technical indicators: {e}")
 
     # Update market index data
     logger.info("Updating market index data...")
     try:
-        from zimuabull.models import MarketIndex, MarketIndexData
         from datetime import datetime, timedelta
+
+        from zimuabull.models import MarketIndex, MarketIndexData
 
         # Check if yfinance is available
         try:
@@ -113,11 +117,11 @@ def scan():
                                 index=index,
                                 date=date_obj,
                                 defaults={
-                                    'open': float(row['Open']),
-                                    'high': float(row['High']),
-                                    'low': float(row['Low']),
-                                    'close': float(row['Close']),
-                                    'volume': int(row['Volume']) if row['Volume'] > 0 else None,
+                                    "open": float(row["Open"]),
+                                    "high": float(row["High"]),
+                                    "low": float(row["Low"]),
+                                    "close": float(row["Close"]),
+                                    "volume": int(row["Volume"]) if row["Volume"] > 0 else None,
                                 }
                             )
                             indices_updated += 1
@@ -133,4 +137,4 @@ def scan():
             logger.warning("yfinance not installed - skipping market index updates. Install with: pip install yfinance")
 
     except Exception as e:
-        logger.error(f"Error updating market indices: {e}")
+        logger.exception(f"Error updating market indices: {e}")

@@ -33,7 +33,7 @@ class Exchange(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {}".format(self.name, self.country)
+        return f"{self.name} - {self.country}"
 
     unique_together = ("name", "country")
 
@@ -68,7 +68,7 @@ class Symbol(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {} = {}".format(self.name, self.symbol, self.exchange.name)
+        return f"{self.name} - {self.symbol} = {self.exchange.name}"
 
     unique_together = ("symbol", "exchange")
 
@@ -83,7 +83,7 @@ class Symbol(models.Model):
         from .signals import calculate_trading_signal
         new_signal = calculate_trading_signal(self)
         self.obv_status = new_signal
-        self.save(update_fields=['obv_status', 'updated_at'])
+        self.save(update_fields=["obv_status", "updated_at"])
         return new_signal
 
     def get_signal_explanation(self):
@@ -126,7 +126,7 @@ class DaySymbol(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {}".format(self.symbol, self.date)
+        return f"{self.symbol} - {self.date}"
 
     unique_together = ("symbol", "date")
 
@@ -150,7 +150,7 @@ class DaySymbol(models.Model):
         historical = DaySymbol.objects.filter(
             symbol=symbol,
             date__lte=date
-        ).order_by('-date')[:(period + 1)]
+        ).order_by("-date")[:(period + 1)]
 
         if len(historical) < period + 1:
             return None
@@ -208,7 +208,7 @@ class DaySymbol(models.Model):
         historical = DaySymbol.objects.filter(
             symbol=symbol,
             date__lte=date
-        ).order_by('-date')[:required_days]
+        ).order_by("-date")[:required_days]
 
         if len(historical) < required_days:
             return None, None, None
@@ -272,7 +272,7 @@ class DayPrediction(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {}".format(self.symbol, self.date)
+        return f"{self.symbol} - {self.date}"
 
     unique_together = ("symbol", "date")
 
@@ -284,7 +284,7 @@ class Favorite(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {}".format(self.symbol, self.user)
+        return f"{self.symbol} - {self.user}"
 
     unique_together = ("symbol", "user")
 
@@ -300,7 +300,7 @@ class Portfolio(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {} ({})".format(self.name, self.user.username, self.exchange.code)
+        return f"{self.name} - {self.user.username} ({self.exchange.code})"
 
     class Meta:
         unique_together = ("name", "user")
@@ -309,8 +309,8 @@ class Portfolio(models.Model):
     def total_invested(self):
         """Calculate total amount currently invested in holdings (market value of positions)"""
         from decimal import Decimal
-        total = Decimal('0')
-        for holding in self.holdings.filter(status='ACTIVE'):
+        total = Decimal("0")
+        for holding in self.holdings.filter(status="ACTIVE"):
             # Use latest_price if available, otherwise fall back to last_close
             current_price = holding.symbol.latest_price if holding.symbol.latest_price else Decimal(str(holding.symbol.last_close))
             total += current_price * holding.quantity
@@ -326,39 +326,39 @@ class Portfolio(models.Model):
 
         # Get all active holding symbol IDs (these are still open positions)
         active_symbol_ids = set(
-            self.holdings.filter(status='ACTIVE').values_list('symbol_id', flat=True)
+            self.holdings.filter(status="ACTIVE").values_list("symbol_id", flat=True)
         )
 
         # Calculate realized gains from CLOSED positions only
-        realized = Decimal('0')
+        realized = Decimal("0")
         transactions = self.transactions.all()
 
         # Track buy cost and sell proceeds for each symbol
         symbol_tracker = {}
 
-        for txn in transactions.order_by('transaction_date'):
+        for txn in transactions.order_by("transaction_date"):
             # Skip cash transactions (DEPOSIT/WITHDRAWAL)
             if txn.symbol is None:
                 continue
 
             symbol_id = txn.symbol.id
             if symbol_id not in symbol_tracker:
-                symbol_tracker[symbol_id] = {'cost': Decimal('0'), 'proceeds': Decimal('0')}
+                symbol_tracker[symbol_id] = {"cost": Decimal("0"), "proceeds": Decimal("0")}
 
-            if txn.transaction_type == 'BUY':
-                symbol_tracker[symbol_id]['cost'] += txn.price * txn.quantity
-            elif txn.transaction_type == 'SELL':
-                symbol_tracker[symbol_id]['proceeds'] += txn.price * txn.quantity
+            if txn.transaction_type == "BUY":
+                symbol_tracker[symbol_id]["cost"] += txn.price * txn.quantity
+            elif txn.transaction_type == "SELL":
+                symbol_tracker[symbol_id]["proceeds"] += txn.price * txn.quantity
 
         # Realized gains = sells - buys, but ONLY for fully closed positions
         for symbol_id, data in symbol_tracker.items():
             if symbol_id not in active_symbol_ids:
                 # This position is fully closed, count the realized gain/loss
-                realized += data['proceeds'] - data['cost']
+                realized += data["proceeds"] - data["cost"]
 
         # Add unrealized gains from current holdings
-        unrealized = Decimal('0')
-        for holding in self.holdings.filter(status='ACTIVE'):
+        unrealized = Decimal("0")
+        for holding in self.holdings.filter(status="ACTIVE"):
             current_price = Decimal(str(holding.symbol.last_close))
             current_value = current_price * holding.quantity
             cost_basis = holding.average_cost * holding.quantity
@@ -371,8 +371,8 @@ class Portfolio(models.Model):
         from decimal import Decimal
 
         # Total capital = all BUY transactions
-        total_buys = Decimal('0')
-        for txn in self.transactions.filter(transaction_type='BUY'):
+        total_buys = Decimal("0")
+        for txn in self.transactions.filter(transaction_type="BUY"):
             total_buys += txn.price * txn.quantity
 
         if total_buys == 0:
@@ -414,15 +414,15 @@ class PortfolioTransaction(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        if self.transaction_type in ['DEPOSIT', 'WITHDRAWAL']:
+        if self.transaction_type in ["DEPOSIT", "WITHDRAWAL"]:
             return f"{self.transaction_type} ${self.amount} on {self.transaction_date}"
         return f"{self.transaction_type} {self.quantity} {self.symbol.symbol if self.symbol else 'N/A'} @ {self.price} on {self.transaction_date}"
 
     class Meta:
         ordering = ["-transaction_date", "-created_at"]
         indexes = [
-            models.Index(fields=['portfolio', '-transaction_date']),
-            models.Index(fields=['symbol', '-transaction_date']),
+            models.Index(fields=["portfolio", "-transaction_date"]),
+            models.Index(fields=["symbol", "-transaction_date"]),
         ]
 
     def total_amount(self):
@@ -431,56 +431,55 @@ class PortfolioTransaction(models.Model):
 
     def save(self, *args, **kwargs):
         """Override save to update portfolio cash and holdings"""
-        from decimal import Decimal
 
         is_new = self.pk is None
 
         if self.transaction_type in [TransactionType.BUY, TransactionType.SELL] and self.symbol:
             if self.symbol.exchange_id != self.portfolio.exchange_id:
-                raise ValidationError("Symbol exchange does not match portfolio exchange.")
+                msg = "Symbol exchange does not match portfolio exchange."
+                raise ValidationError(msg)
 
         # Save the transaction first
         super().save(*args, **kwargs)
 
         if is_new:
-            if self.transaction_type == 'BUY':
+            if self.transaction_type == "BUY":
                 # Deduct cash for buy
                 amount = self.quantity * self.price
                 self.portfolio.cash_balance -= amount
-                self.portfolio.save(update_fields=['cash_balance', 'updated_at'])
+                self.portfolio.save(update_fields=["cash_balance", "updated_at"])
                 # Update or create holding
                 self._update_holding_for_buy()
 
-            elif self.transaction_type == 'SELL':
+            elif self.transaction_type == "SELL":
                 # Add cash for sell
                 amount = self.quantity * self.price
                 self.portfolio.cash_balance += amount
-                self.portfolio.save(update_fields=['cash_balance', 'updated_at'])
+                self.portfolio.save(update_fields=["cash_balance", "updated_at"])
                 # Update holding
                 self._update_holding_for_sell()
 
-            elif self.transaction_type == 'DEPOSIT':
+            elif self.transaction_type == "DEPOSIT":
                 # Add cash to portfolio
                 self.portfolio.cash_balance += self.amount
-                self.portfolio.save(update_fields=['cash_balance', 'updated_at'])
+                self.portfolio.save(update_fields=["cash_balance", "updated_at"])
 
-            elif self.transaction_type == 'WITHDRAWAL':
+            elif self.transaction_type == "WITHDRAWAL":
                 # Remove cash from portfolio
                 self.portfolio.cash_balance -= self.amount
-                self.portfolio.save(update_fields=['cash_balance', 'updated_at'])
+                self.portfolio.save(update_fields=["cash_balance", "updated_at"])
 
     def _update_holding_for_buy(self):
         """Update or create holding after a buy transaction"""
-        from decimal import Decimal
 
         holding, created = PortfolioHolding.objects.get_or_create(
             portfolio=self.portfolio,
             symbol=self.symbol,
-            status='ACTIVE',
+            status="ACTIVE",
             defaults={
-                'quantity': self.quantity,
-                'average_cost': self.price,
-                'first_purchase_date': self.transaction_date
+                "quantity": self.quantity,
+                "average_cost": self.price,
+                "first_purchase_date": self.transaction_date
             }
         )
 
@@ -490,7 +489,7 @@ class PortfolioTransaction(models.Model):
             total_quantity = holding.quantity + self.quantity
             holding.average_cost = total_cost / total_quantity
             holding.quantity = total_quantity
-            holding.save(update_fields=['quantity', 'average_cost', 'updated_at'])
+            holding.save(update_fields=["quantity", "average_cost", "updated_at"])
 
     def _update_holding_for_sell(self):
         """Update holding after a sell transaction"""
@@ -498,7 +497,7 @@ class PortfolioTransaction(models.Model):
             holding = PortfolioHolding.objects.get(
                 portfolio=self.portfolio,
                 symbol=self.symbol,
-                status='ACTIVE'
+                status="ACTIVE"
             )
 
             holding.quantity -= self.quantity
@@ -508,7 +507,7 @@ class PortfolioTransaction(models.Model):
                 holding.delete()
             else:
                 # Partial sell - update quantity
-                holding.save(update_fields=['quantity', 'updated_at'])
+                holding.save(update_fields=["quantity", "updated_at"])
 
         except PortfolioHolding.DoesNotExist:
             # Can't sell what you don't have - this should be validated before save
@@ -546,15 +545,11 @@ class PortfolioHolding(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "{} - {} shares of {}".format(
-            self.portfolio.name,
-            self.quantity,
-            self.symbol.symbol
-        )
+        return f"{self.portfolio.name} - {self.quantity} shares of {self.symbol.symbol}"
 
     class Meta:
         ordering = ["-first_purchase_date"]
-        unique_together = ('portfolio', 'symbol', 'status')
+        unique_together = ("portfolio", "symbol", "status")
 
     def cost_basis(self):
         """Total amount paid for this holding"""
@@ -581,8 +576,7 @@ class PortfolioHolding(models.Model):
     def days_held(self):
         """Number of days this position has been held"""
         from datetime import date as dt_date
-        end_date = self.sell_date if self.status == HoldingStatus.SOLD else dt_date.today()
-        return (end_date - self.purchase_date).days
+        return (dt_date.today() - self.first_purchase_date).days
 
 
 class PortfolioSnapshot(models.Model):
@@ -596,7 +590,7 @@ class PortfolioSnapshot(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return "{} - {} (${})".format(self.portfolio.name, self.date, self.total_value)
+        return f"{self.portfolio.name} - {self.date} (${self.total_value})"
 
     class Meta:
         unique_together = ("portfolio", "date")
@@ -621,9 +615,9 @@ class ConversationMessage(models.Model):
     """Individual messages in a conversation"""
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="messages")
     role = models.CharField(max_length=20, choices=[
-        ('user', 'User'),
-        ('assistant', 'Assistant'),
-        ('system', 'System')
+        ("user", "User"),
+        ("assistant", "Assistant"),
+        ("system", "System")
     ])
     content = models.TextField()
     context_data = models.JSONField(null=True, blank=True)  # Store context used for this message
@@ -677,8 +671,8 @@ class SignalHistory(models.Model):
         ordering = ["-date"]
         verbose_name_plural = "Signal histories"
         indexes = [
-            models.Index(fields=['symbol', '-date']),
-            models.Index(fields=['new_signal', '-date']),
+            models.Index(fields=["symbol", "-date"]),
+            models.Index(fields=["new_signal", "-date"]),
         ]
 
 
@@ -725,7 +719,7 @@ class MarketIndexData(models.Model):
         ordering = ["-date"]
         unique_together = ("index", "date")
         indexes = [
-            models.Index(fields=['index', '-date']),
+            models.Index(fields=["index", "-date"]),
         ]
 
 
@@ -770,11 +764,11 @@ class DayTradingRecommendation(models.Model):
         return f"{self.recommendation_date} - Rank {self.rank}: {self.symbol.symbol} (Score: {self.confidence_score:.1f})"
 
     class Meta:
-        ordering = ['recommendation_date', 'rank']
-        unique_together = ('symbol', 'recommendation_date')
+        ordering = ["recommendation_date", "rank"]
+        unique_together = ("symbol", "recommendation_date")
         indexes = [
-            models.Index(fields=['-recommendation_date', 'rank']),
-            models.Index(fields=['symbol', '-recommendation_date']),
+            models.Index(fields=["-recommendation_date", "rank"]),
+            models.Index(fields=["symbol", "-recommendation_date"]),
         ]
 
     def calculate_actual_return(self):
@@ -783,7 +777,7 @@ class DayTradingRecommendation(models.Model):
             self.actual_return = ((self.actual_close - self.entry_price) / self.entry_price) * 100
             if self.target_price:
                 self.hit_target = self.actual_high >= self.target_price
-            self.save(update_fields=['actual_return', 'hit_target', 'updated_at'])
+            self.save(update_fields=["actual_return", "hit_target", "updated_at"])
 
 
 class FeatureSnapshot(models.Model):

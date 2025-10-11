@@ -1,6 +1,8 @@
 import logging
+
 from celery import shared_task
-from zimuabull.models import Symbol, DaySymbol, DaySymbolChoice, SignalHistory, DayPrediction
+
+from zimuabull.models import DayPrediction, DaySymbol, DaySymbolChoice, SignalHistory, Symbol
 from zimuabull.scanners.tse import BaseScanner
 
 logger = logging.getLogger(__name__)
@@ -46,26 +48,26 @@ def process_symbol_data(symbol_id, exchange_code):
                 DaySymbol.objects.update_or_create(
                     symbol=symbol,
                     date=row["date"],
-                    defaults=dict(
-                        open=row["open"],
-                        high=row["high"],
-                        low=row["low"],
-                        adj_close=row["adj_close"],
-                        close=row["close"],
-                        volume=row["volume"],
-                        obv=row["obv"],
-                        obv_signal=row["obv_signal"],
-                        obv_signal_sum=row["obv_signal_sum"],
-                        price_diff=row["price_diff"],
-                        thirty_price_diff=row["30_day_price_diff_avg"],
-                        thirty_close_trend=row["30_day_close_trendline"],
-                        status=status,
-                    ),
+                    defaults={
+                        "open": row["open"],
+                        "high": row["high"],
+                        "low": row["low"],
+                        "adj_close": row["adj_close"],
+                        "close": row["close"],
+                        "volume": row["volume"],
+                        "obv": row["obv"],
+                        "obv_signal": row["obv_signal"],
+                        "obv_signal_sum": row["obv_signal_sum"],
+                        "price_diff": row["price_diff"],
+                        "thirty_price_diff": row["30_day_price_diff_avg"],
+                        "thirty_close_trend": row["30_day_close_trendline"],
+                        "status": status,
+                    },
                 )
                 statuses.append(status)
 
             except Exception as e:
-                logger.error(f"Error processing row for {symbol.symbol}: {e}")
+                logger.exception(f"Error processing row for {symbol.symbol}: {e}")
                 continue
 
         # Update symbol metadata
@@ -89,7 +91,7 @@ def process_symbol_data(symbol_id, exchange_code):
 
                 # Track signal changes in history
                 if new_signal != previous_signal:
-                    latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by('-date').first()
+                    latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by("-date").first()
 
                     SignalHistory.objects.create(
                         symbol=symbol,
@@ -111,8 +113,8 @@ def process_symbol_data(symbol_id, exchange_code):
         return f"Processed {symbol.symbol} successfully"
 
     except Symbol.DoesNotExist:
-        logger.error(f"Symbol with id {symbol_id} not found")
+        logger.exception(f"Symbol with id {symbol_id} not found")
         return f"Symbol with id {symbol_id} not found"
     except Exception as e:
-        logger.error(f"Error processing symbol {symbol_id}: {e}")
+        logger.exception(f"Error processing symbol {symbol_id}: {e}")
         return f"Error processing symbol {symbol_id}: {e}"

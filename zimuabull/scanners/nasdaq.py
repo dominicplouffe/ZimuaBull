@@ -1,4 +1,5 @@
 from zimuabull.models import Exchange
+
 from .tse import BaseScanner
 
 

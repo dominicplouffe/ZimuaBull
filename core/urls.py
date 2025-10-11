@@ -16,13 +16,13 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
-from django.urls import include
+from django.urls import include, path
+
 from dj_rest_auth.views import LoginView, LogoutView
 from drf_spectacular.views import (
     SpectacularAPIView,
-    SpectacularSwaggerView,
     SpectacularRedocView,
+    SpectacularSwaggerView,
 )
 
 urlpatterns = [

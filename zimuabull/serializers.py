@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Symbol, DaySymbol, DayPrediction, Favorite, Exchange, Portfolio, PortfolioHolding, PortfolioSnapshot
+
+from .models import DayPrediction, DaySymbol, Exchange, Favorite, Portfolio, PortfolioHolding, Symbol
 
 
 class ExchangeSerializer(serializers.ModelSerializer):
@@ -29,7 +30,7 @@ class DaySymbolDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DaySymbol
-        exclude = ['symbol']
+        exclude = ["symbol"]
 
 
 class DayPredictionSerializer(serializers.ModelSerializer):
@@ -61,14 +62,14 @@ class PortfolioHoldingSerializer(serializers.ModelSerializer):
     class Meta:
         model = PortfolioHolding
         fields = [
-            'id', 'portfolio', 'symbol', 'quantity',
-            'average_cost', 'first_purchase_date', 'status',
-            'stop_loss_price', 'target_price',
-            'cost_basis', 'current_value', 'current_price',
-            'gain_loss', 'gain_loss_percent', 'days_held',
-            'created_at', 'updated_at'
+            "id", "portfolio", "symbol", "quantity",
+            "average_cost", "first_purchase_date", "status",
+            "stop_loss_price", "target_price",
+            "cost_basis", "current_value", "current_price",
+            "gain_loss", "gain_loss_percent", "days_held",
+            "created_at", "updated_at"
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ["created_at", "updated_at"]
 
     def get_average_cost(self, obj):
         return float(obj.average_cost)
@@ -120,12 +121,12 @@ class PortfolioSerializer(serializers.ModelSerializer):
     class Meta:
         model = Portfolio
         fields = [
-            'id', 'name', 'description', 'user', 'exchange',
-            'is_active', 'created_at', 'updated_at',
-            'cash_balance', 'holdings', 'holdings_count', 'active_holdings_count',
-            'total_invested', 'current_value', 'total_gain_loss', 'total_gain_loss_percent'
+            "id", "name", "description", "user", "exchange",
+            "is_active", "created_at", "updated_at",
+            "cash_balance", "holdings", "holdings_count", "active_holdings_count",
+            "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent"
         ]
-        read_only_fields = ['user', 'created_at', 'updated_at']
+        read_only_fields = ["user", "created_at", "updated_at"]
 
     def get_cash_balance(self, obj):
         return float(obj.cash_balance)
@@ -146,7 +147,7 @@ class PortfolioSerializer(serializers.ModelSerializer):
         return obj.holdings.count()
 
     def get_active_holdings_count(self, obj):
-        return obj.holdings.filter(status='ACTIVE').count()
+        return obj.holdings.filter(status="ACTIVE").count()
 
 
 class PortfolioSummarySerializer(serializers.ModelSerializer):
@@ -162,10 +163,10 @@ class PortfolioSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Portfolio
         fields = [
-            'id', 'name', 'description', 'exchange',
-            'is_active', 'created_at', 'updated_at',
-            'cash_balance', 'holdings_count', 'active_holdings_count',
-            'total_invested', 'current_value', 'total_gain_loss', 'total_gain_loss_percent'
+            "id", "name", "description", "exchange",
+            "is_active", "created_at", "updated_at",
+            "cash_balance", "holdings_count", "active_holdings_count",
+            "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent"
         ]
 
     def get_cash_balance(self, obj):
@@ -187,11 +188,4 @@ class PortfolioSummarySerializer(serializers.ModelSerializer):
         return obj.holdings.count()
 
     def get_active_holdings_count(self, obj):
-        return obj.holdings.filter(status='ACTIVE').count()
-
-
-class PortfolioSnapshotSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PortfolioSnapshot
-        fields = '__all__'
-        read_only_fields = ['created_at']
+        return obj.holdings.filter(status="ACTIVE").count()

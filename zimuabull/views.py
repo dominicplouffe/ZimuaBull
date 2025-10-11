@@ -1,50 +1,59 @@
 import json
 import math
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+
+from django.contrib.auth.decorators import login_required
+from django.db.models import Count, Prefetch, Q
+from django.http import JsonResponse
+from django.utils.decorators import method_decorator
 
 from asgiref.sync import sync_to_async
-from rest_framework import viewsets, filters, serializers as rest_serializers
-from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import (
-    Symbol, DaySymbol, DayPrediction, Favorite, Exchange,
-    DayPredictionChoice, DaySymbolChoice, Portfolio, PortfolioHolding, PortfolioSnapshot,
-    Conversation, ConversationMessage, SignalHistory, MarketIndex, MarketIndexData,
-    DayTradingRecommendation, PortfolioTransaction
-)
-from django.http import JsonResponse
+from rest_framework import filters, status, viewsets
+from rest_framework import serializers as rest_serializers
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .chat import ChatOrchestrator
 from .chat.sse import sse_response
 from .daytrading.trading_engine import generate_recommendations
+from .models import (
+    Conversation,
+    ConversationMessage,
+    DayPrediction,
+    DayPredictionChoice,
+    DaySymbol,
+    DaySymbolChoice,
+    DayTradingRecommendation,
+    Exchange,
+    Favorite,
+    MarketIndex,
+    MarketIndexData,
+    Portfolio,
+    PortfolioHolding,
+    PortfolioTransaction,
+    SignalHistory,
+    Symbol,
+)
 from .serializers import (
-    SymbolSerializer,
-    DaySymbolSerializer,
-    DaySymbolDetailSerializer,
     DayPredictionSerializer,
-    FavoriteSerializer,
+    DaySymbolDetailSerializer,
+    DaySymbolSerializer,
     ExchangeSerializer,
+    FavoriteSerializer,
+    PortfolioHoldingSerializer,
     PortfolioSerializer,
     PortfolioSummarySerializer,
-    PortfolioHoldingSerializer,
-    PortfolioSnapshotSerializer,
+    SymbolSerializer,
 )
-from django.contrib.auth.decorators import login_required
-from django.utils.decorators import method_decorator
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
-from django.shortcuts import get_object_or_404
-from django.db.models import Count, Q, Prefetch
-from django.db import models
-from datetime import date, datetime, timedelta
-from decimal import Decimal
 
 
 class DaySymbolPagination(PageNumberPagination):
     page_size = 30
-    page_size_query_param = 'page_size'
+    page_size_query_param = "page_size"
     max_page_size = 1000
 
 
@@ -64,36 +73,6 @@ class ExchangeViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Exchange.objects.all()
     serializer_class = ExchangeSerializer
 
-
-class SymbolViewSet(viewsets.ModelViewSet):
-    """
-    Stock Symbol Management
-
-    Manage stock symbols tracked for a specific exchange (TSE, NASDAQ, NYSE).
-    Each symbol includes technical indicators like OBV status, trend analysis, and prediction accuracy.
-
-    **URL Structure:**
-    - `/api/symbols/{exchange}/` - List all symbols for the given exchange code
-
-    **Key Fields:**
-    - `symbol`: Ticker symbol (e.g., "AAPL", "GOOGL")
-    - `exchange`: Associated stock exchange with full details
-    - `obv_status`: On-Balance Volume signal (BUY/SELL/HOLD/NA)
-    - `thirty_close_trend`: 30-day trendline angle in degrees
-    - `close_bucket`: Price trend classification (UP/DOWN/NA)
-    - `accuracy`: Prediction accuracy percentage (0.0-1.0)
-
-    **Example:** `/api/symbols/NASDAQ/`
-    """
-    serializer_class = SymbolSerializer
-
-    def get_queryset(self):
-        exchange_code = self.kwargs.get('exchange')
-        if exchange_code:
-            # Validate that the exchange exists
-            exchange = get_object_or_404(Exchange, code=exchange_code)
-            return Symbol.objects.filter(exchange=exchange).select_related('exchange')
-        return Symbol.objects.none()
 
 
 class DaySymbolViewSet(viewsets.ReadOnlyModelViewSet):
@@ -139,8 +118,8 @@ class DaySymbolViewSet(viewsets.ReadOnlyModelViewSet):
 
     def list(self, request, *args, **kwargs):
         # Require symbol and exchange parameters for list endpoint
-        symbol = request.query_params.get('symbol__symbol')
-        exchange = request.query_params.get('symbol__exchange__code')
+        symbol = request.query_params.get("symbol__symbol")
+        exchange = request.query_params.get("symbol__exchange__code")
 
         if not symbol or not exchange:
             return Response(
@@ -200,8 +179,8 @@ class DayPredictionViewSet(viewsets.ReadOnlyModelViewSet):
 
     def list(self, request, *args, **kwargs):
         # Require symbol and exchange parameters for list endpoint
-        symbol = request.query_params.get('symbol__symbol')
-        exchange = request.query_params.get('symbol__exchange__code')
+        symbol = request.query_params.get("symbol__symbol")
+        exchange = request.query_params.get("symbol__exchange__code")
 
         if not symbol or not exchange:
             return Response(
@@ -210,13 +189,11 @@ class DayPredictionViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
         # Get the limit parameter, default to 1 (latest record only)
-        limit = request.query_params.get('limit', '1')
+        limit = request.query_params.get("limit", "1")
         try:
             limit = int(limit)
-            if limit < 1:
-                limit = 1
-            if limit > 1000:
-                limit = 1000
+            limit = max(limit, 1)
+            limit = min(limit, 1000)
         except (ValueError, TypeError):
             limit = 1
 
@@ -278,10 +255,7 @@ class FavoriteList(APIView):
                     "exchange": symbol.exchange.code,
                 }
 
-                if latest_day_symbol:
-                    day_symbol_data = DaySymbolDetailSerializer(latest_day_symbol).data
-                else:
-                    day_symbol_data = None
+                day_symbol_data = DaySymbolDetailSerializer(latest_day_symbol).data if latest_day_symbol else None
 
                 favorite_payload["day_symbol"] = day_symbol_data
                 favorites.append(favorite_payload)
@@ -371,7 +345,7 @@ class PredictionCountByDate(APIView):
     **Example:** `/api/prediction-count/?date=2024-01-15`
     """
     def get(self, request):
-        date_str = request.query_params.get('date')
+        date_str = request.query_params.get("date")
 
         if not date_str:
             return Response(
@@ -433,8 +407,8 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
     ordering = ["symbol"]
 
     def get_queryset(self):
-        prediction_type = self.request.query_params.get('prediction', '').upper()
-        exchange_code = self.request.query_params.get('exchange')
+        prediction_type = self.request.query_params.get("prediction", "").upper()
+        exchange_code = self.request.query_params.get("exchange")
 
         if not prediction_type:
             return Symbol.objects.none()
@@ -443,21 +417,21 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
             return Symbol.objects.none()
 
         # Get the latest prediction for each symbol
-        from django.db.models import Subquery, OuterRef
+        from django.db.models import OuterRef, Subquery
 
         latest_predictions = DayPrediction.objects.filter(
-            symbol=OuterRef('pk')
-        ).order_by('-date')
+            symbol=OuterRef("pk")
+        ).order_by("-date")
 
         # Get symbols where the latest prediction matches the requested type
         symbol_ids = Symbol.objects.annotate(
-            latest_prediction=Subquery(latest_predictions.values('prediction')[:1]),
-            latest_prediction_date=Subquery(latest_predictions.values('date')[:1])
+            latest_prediction=Subquery(latest_predictions.values("prediction")[:1]),
+            latest_prediction_date=Subquery(latest_predictions.values("date")[:1])
         ).filter(
             latest_prediction=prediction_type
-        ).values_list('id', flat=True)
+        ).values_list("id", flat=True)
 
-        queryset = Symbol.objects.filter(id__in=symbol_ids).select_related('exchange')
+        queryset = Symbol.objects.filter(id__in=symbol_ids).select_related("exchange")
 
         if exchange_code:
             queryset = queryset.filter(exchange__code=exchange_code)
@@ -465,7 +439,7 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
         return queryset
 
     def list(self, request, *args, **kwargs):
-        prediction_type = request.query_params.get('prediction', '').upper()
+        prediction_type = request.query_params.get("prediction", "").upper()
 
         if not prediction_type:
             return Response(
@@ -475,7 +449,7 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
 
         if prediction_type not in [DayPredictionChoice.POSITIVE, DayPredictionChoice.NEGATIVE, DayPredictionChoice.NEUTRAL]:
             return Response(
-                {"error": f"Invalid prediction type. Must be POSITIVE, NEGATIVE, or NEUTRAL"},
+                {"error": "Invalid prediction type. Must be POSITIVE, NEGATIVE, or NEUTRAL"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -505,7 +479,7 @@ class DaySymbolChoiceCount(APIView):
     """
     def get(self, request):
         # Count symbols by their obv_status field
-        counts = Symbol.objects.values('obv_status').annotate(count=Count('id'))
+        counts = Symbol.objects.values("obv_status").annotate(count=Count("id"))
 
         result = {
             "BUY": 0,
@@ -518,13 +492,13 @@ class DaySymbolChoiceCount(APIView):
 
         total = 0
         for item in counts:
-            status_value = item['obv_status']
-            count_value = item['count']
+            status_value = item["obv_status"]
+            count_value = item["count"]
             if status_value in result:
                 result[status_value] = count_value
             total += count_value
 
-        result['total'] = total
+        result["total"] = total
         return Response(result)
 
 
@@ -558,8 +532,8 @@ class SymbolsByStatus(viewsets.ReadOnlyModelViewSet):
     ordering = ["symbol"]
 
     def get_queryset(self):
-        status_type = self.request.query_params.get('status', '').upper()
-        exchange_code = self.request.query_params.get('exchange')
+        status_type = self.request.query_params.get("status", "").upper()
+        exchange_code = self.request.query_params.get("exchange")
 
         if not status_type:
             return Symbol.objects.none()
@@ -568,7 +542,7 @@ class SymbolsByStatus(viewsets.ReadOnlyModelViewSet):
         if status_type not in valid_statuses:
             return Symbol.objects.none()
 
-        queryset = Symbol.objects.filter(obv_status=status_type).select_related('exchange')
+        queryset = Symbol.objects.filter(obv_status=status_type).select_related("exchange")
 
         if exchange_code:
             queryset = queryset.filter(exchange__code=exchange_code)
@@ -576,7 +550,7 @@ class SymbolsByStatus(viewsets.ReadOnlyModelViewSet):
         return queryset
 
     def list(self, request, *args, **kwargs):
-        status_type = request.query_params.get('status', '').upper()
+        status_type = request.query_params.get("status", "").upper()
 
         if not status_type:
             return Response(
@@ -614,9 +588,6 @@ class PortfolioViewSet(viewsets.ModelViewSet):
     - `GET /api/portfolios/{id}/` - Get portfolio details with all holdings
     - `PUT/PATCH /api/portfolios/{id}/` - Update portfolio
     - `DELETE /api/portfolios/{id}/` - Delete portfolio
-    - `GET /api/portfolios/{id}/performance/` - Get detailed performance metrics
-    - `GET /api/portfolios/{id}/top-performers/` - Get best/worst performing holdings
-    - `GET /api/portfolios/{id}/snapshots/` - Get historical snapshots
 
     **Example Create:**
     ```json
@@ -632,118 +603,18 @@ class PortfolioViewSet(viewsets.ModelViewSet):
     pagination_class = DaySymbolPagination
 
     def get_queryset(self):
-        return Portfolio.objects.filter(user=self.request.user).prefetch_related('holdings__symbol__exchange')
+        return Portfolio.objects.filter(user=self.request.user).prefetch_related("holdings__symbol__exchange")
 
     def get_serializer_class(self):
         from .serializers_transactions import PortfolioWithCashSerializer
-        if self.action == 'list':
+        if self.action == "list":
             return PortfolioSummarySerializer
-        elif self.action in ['create', 'update', 'partial_update']:
+        if self.action in ["create", "update", "partial_update"]:
             return PortfolioWithCashSerializer
         return PortfolioSerializer
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-
-    @action(detail=True, methods=['get'])
-    def performance(self, request, pk=None):
-        """
-        Get detailed performance metrics for a portfolio
-
-        Returns comprehensive analytics including sector allocation,
-        best/worst performers, and risk metrics.
-        """
-        portfolio = self.get_object()
-        active_holdings = portfolio.holdings.filter(status='ACTIVE')
-
-        # Calculate performance metrics
-        total_invested = float(portfolio.total_invested())
-        current_value = float(portfolio.current_value())
-        total_gain_loss = current_value - total_invested
-        total_gain_loss_percent = (total_gain_loss / total_invested * 100) if total_invested > 0 else 0
-
-        # Per-holding analysis
-        holdings_data = []
-        for holding in active_holdings:
-            holdings_data.append({
-                'symbol': holding.symbol.symbol,
-                'exchange': holding.symbol.exchange.code,
-                'quantity': float(holding.quantity),
-                'purchase_price': float(holding.purchase_price),
-                'current_price': float(holding.symbol.last_close),
-                'cost_basis': holding.cost_basis(),
-                'current_value': holding.current_value(),
-                'gain_loss': holding.gain_loss(),
-                'gain_loss_percent': holding.gain_loss_percent(),
-                'days_held': holding.days_held(),
-                'weight': (holding.current_value() / current_value * 100) if current_value > 0 else 0
-            })
-
-        # Sort by performance
-        holdings_data.sort(key=lambda x: x['gain_loss_percent'], reverse=True)
-
-        return Response({
-            'portfolio_id': portfolio.id,
-            'portfolio_name': portfolio.name,
-            'total_invested': total_invested,
-            'current_value': current_value,
-            'total_gain_loss': total_gain_loss,
-            'total_gain_loss_percent': round(total_gain_loss_percent, 2),
-            'holdings_count': active_holdings.count(),
-            'holdings': holdings_data,
-            'best_performer': holdings_data[0] if holdings_data else None,
-            'worst_performer': holdings_data[-1] if holdings_data else None,
-        })
-
-    @action(detail=True, methods=['get'])
-    def top_performers(self, request, pk=None):
-        """
-        Get top 5 and bottom 5 performing holdings
-
-        Returns best and worst performers by percentage gain/loss
-        """
-        portfolio = self.get_object()
-        active_holdings = list(portfolio.holdings.filter(status='ACTIVE'))
-
-        # Sort by gain/loss percentage
-        sorted_holdings = sorted(active_holdings, key=lambda h: h.gain_loss_percent(), reverse=True)
-
-        def serialize_holding(holding):
-            return {
-                'id': holding.id,
-                'symbol': holding.symbol.symbol,
-                'exchange': holding.symbol.exchange.code,
-                'quantity': float(holding.quantity),
-                'purchase_price': float(holding.purchase_price),
-                'current_price': float(holding.symbol.last_close),
-                'gain_loss': holding.gain_loss(),
-                'gain_loss_percent': round(holding.gain_loss_percent(), 2),
-                'days_held': holding.days_held()
-            }
-
-        top_5 = [serialize_holding(h) for h in sorted_holdings[:5]]
-        bottom_5 = [serialize_holding(h) for h in sorted_holdings[-5:]]
-
-        return Response({
-            'top_performers': top_5,
-            'worst_performers': bottom_5
-        })
-
-    @action(detail=True, methods=['get'])
-    def snapshots(self, request, pk=None):
-        """
-        Get historical performance snapshots
-
-        Query Parameters:
-        - days: Number of days to retrieve (default: 30, max: 365)
-        """
-        portfolio = self.get_object()
-        days = min(int(request.query_params.get('days', 30)), 365)
-
-        snapshots = portfolio.snapshots.all()[:days]
-        serializer = PortfolioSnapshotSerializer(snapshots, many=True)
-
-        return Response(serializer.data)
 
 
 class PortfolioHoldingViewSet(viewsets.ReadOnlyModelViewSet):
@@ -778,21 +649,21 @@ class PortfolioHoldingViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     pagination_class = DaySymbolPagination
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    filterset_fields = ['portfolio', 'status', 'symbol']
-    ordering_fields = ['first_purchase_date', 'quantity']
-    ordering = ['-first_purchase_date']
+    filterset_fields = ["portfolio", "status", "symbol"]
+    ordering_fields = ["first_purchase_date", "quantity"]
+    ordering = ["-first_purchase_date"]
     serializer_class = PortfolioHoldingSerializer
 
     def get_queryset(self):
         return PortfolioHolding.objects.filter(
             portfolio__user=self.request.user
-        ).select_related('portfolio', 'symbol__exchange')
+        ).select_related("portfolio", "symbol__exchange")
 
     def partial_update(self, request, *args, **kwargs):
         """Allow updating stop_loss_price and target_price only"""
         # Only allow updating these fields
-        allowed_fields = ['stop_loss_price', 'target_price']
-        for key in request.data.keys():
+        allowed_fields = ["stop_loss_price", "target_price"]
+        for key in request.data:
             if key not in allowed_fields:
                 return Response(
                     {"error": f"Cannot update field '{key}'. Only stop_loss_price and target_price can be updated. Use /api/transactions/ to buy/sell."},
@@ -838,111 +709,21 @@ class PortfolioSummary(APIView):
         total_gain_loss = total_current_value - total_invested
         total_gain_loss_percent = (total_gain_loss / total_invested * 100) if total_invested > 0 else 0
 
-        total_holdings = sum(p.holdings.filter(status='ACTIVE').count() for p in portfolios)
+        total_holdings = sum(p.holdings.filter(status="ACTIVE").count() for p in portfolios)
 
         portfolio_summaries = PortfolioSummarySerializer(portfolios, many=True).data
 
         return Response({
-            'total_portfolios': portfolios.count(),
-            'active_portfolios': portfolios.filter(is_active=True).count(),
-            'total_invested': float(total_invested),
-            'total_current_value': float(total_current_value),
-            'total_gain_loss': float(total_gain_loss),
-            'total_gain_loss_percent': round(total_gain_loss_percent, 2),
-            'total_holdings': total_holdings,
-            'portfolios': portfolio_summaries
+            "total_portfolios": portfolios.count(),
+            "active_portfolios": portfolios.filter(is_active=True).count(),
+            "total_invested": float(total_invested),
+            "total_current_value": float(total_current_value),
+            "total_gain_loss": float(total_gain_loss),
+            "total_gain_loss_percent": round(total_gain_loss_percent, 2),
+            "total_holdings": total_holdings,
+            "portfolios": portfolio_summaries
         })
 
-
-class RecalculateSignals(APIView):
-    """
-    Recalculate Trading Signals
-
-    Manually trigger recalculation of trading signals for symbols.
-
-    **Query Parameters:**
-    - `exchange`: Optional - Recalculate only for specific exchange (e.g., TSE, NASDAQ)
-    - `symbol`: Optional - Recalculate for specific symbol (requires exchange parameter)
-
-    **Returns:**
-    ```json
-    {
-        "total_processed": 150,
-        "updated": 42,
-        "errors": 0,
-        "signal_distribution": {
-            "STRONG_BUY": 5,
-            "BUY": 25,
-            "HOLD": 80,
-            "SELL": 20,
-            "STRONG_SELL": 3,
-            "NA": 17
-        }
-    }
-    ```
-
-    **Examples:**
-    - All symbols: `/api/recalculate-signals/`
-    - Specific exchange: `/api/recalculate-signals/?exchange=TSE`
-    - Specific symbol: `/api/recalculate-signals/?symbol=AAPL&exchange=NASDAQ`
-    """
-
-    def post(self, request):
-        exchange_code = request.query_params.get('exchange')
-        symbol_ticker = request.query_params.get('symbol')
-
-        # Build queryset
-        queryset = Symbol.objects.all()
-
-        if exchange_code:
-            queryset = queryset.filter(exchange__code=exchange_code)
-
-        if symbol_ticker:
-            if not exchange_code:
-                return Response(
-                    {"error": "symbol parameter requires exchange parameter"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            queryset = queryset.filter(symbol=symbol_ticker)
-
-        total_symbols = queryset.count()
-
-        if total_symbols == 0:
-            return Response(
-                {"error": "No symbols found matching criteria"},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        updated_count = 0
-        error_count = 0
-        signal_counts = {
-            'STRONG_BUY': 0,
-            'BUY': 0,
-            'HOLD': 0,
-            'SELL': 0,
-            'STRONG_SELL': 0,
-            'NA': 0
-        }
-
-        for symbol in queryset:
-            try:
-                old_signal = symbol.obv_status
-                new_signal = symbol.update_trading_signal()
-
-                if old_signal != new_signal:
-                    updated_count += 1
-
-                signal_counts[new_signal] = signal_counts.get(new_signal, 0) + 1
-
-            except Exception:
-                error_count += 1
-
-        return Response({
-            'total_processed': total_symbols,
-            'updated': updated_count,
-            'errors': error_count,
-            'signal_distribution': signal_counts
-        })
 
 
 class SignalExplanation(APIView):
@@ -974,8 +755,8 @@ class SignalExplanation(APIView):
     """
 
     def get(self, request):
-        symbol_ticker = request.query_params.get('symbol')
-        exchange_code = request.query_params.get('exchange')
+        symbol_ticker = request.query_params.get("symbol")
+        exchange_code = request.query_params.get("exchange")
 
         if not symbol_ticker or not exchange_code:
             return Response(
@@ -992,8 +773,8 @@ class SignalExplanation(APIView):
             )
 
         explanation_data = symbol.get_signal_explanation()
-        explanation_data['symbol'] = symbol.symbol
-        explanation_data['exchange'] = symbol.exchange.code
+        explanation_data["symbol"] = symbol.symbol
+        explanation_data["exchange"] = symbol.exchange.code
 
         return Response(explanation_data)
 
@@ -1036,8 +817,8 @@ class SymbolSearch(viewsets.ReadOnlyModelViewSet):
     pagination_class = DaySymbolPagination
 
     def get_queryset(self):
-        query = self.request.query_params.get('q') or self.request.query_params.get('query')
-        exchange_code = self.request.query_params.get('exchange')
+        query = self.request.query_params.get("q") or self.request.query_params.get("query")
+        exchange_code = self.request.query_params.get("exchange")
 
         if not query:
             return Symbol.objects.none()
@@ -1045,27 +826,26 @@ class SymbolSearch(viewsets.ReadOnlyModelViewSet):
         # Search by symbol (ticker) or name
         queryset = Symbol.objects.filter(
             Q(symbol__icontains=query) | Q(name__icontains=query)
-        ).select_related('exchange')
+        ).select_related("exchange")
 
         # Filter by exchange if provided
         if exchange_code:
             queryset = queryset.filter(exchange__code=exchange_code)
 
         # Order by: exact ticker matches first, then alphabetically
-        from django.db.models import Case, When, Value, IntegerField
-        queryset = queryset.annotate(
+        from django.db.models import Case, IntegerField, Value, When
+        return queryset.annotate(
             exact_match=Case(
                 When(symbol__iexact=query, then=Value(0)),
                 When(symbol__istartswith=query, then=Value(1)),
                 default=Value(2),
                 output_field=IntegerField()
             )
-        ).order_by('exact_match', 'symbol')
+        ).order_by("exact_match", "symbol")
 
-        return queryset
 
     def list(self, request, *args, **kwargs):
-        query = request.query_params.get('q') or request.query_params.get('query')
+        query = request.query_params.get("q") or request.query_params.get("query")
 
         if not query:
             return Response(
@@ -1080,7 +860,7 @@ class SymbolSearch(viewsets.ReadOnlyModelViewSet):
             )
 
         # Override page_size max for search
-        page_size = request.query_params.get('page_size')
+        page_size = request.query_params.get("page_size")
         if page_size:
             try:
                 page_size_int = int(page_size)
@@ -1121,10 +901,10 @@ class LLMContext(APIView):
 
     def get(self, request):
         from .llm_helpers import (
-            format_symbol_for_llm,
-            format_portfolio_for_llm,
+            build_system_prompt,
             format_market_overview_for_llm,
-            build_system_prompt
+            format_portfolio_for_llm,
+            format_symbol_for_llm,
         )
 
         context = {
@@ -1133,36 +913,36 @@ class LLMContext(APIView):
         }
 
         # Symbol data
-        symbol_ticker = request.query_params.get('symbol')
-        exchange_code = request.query_params.get('exchange')
-        include_history = request.query_params.get('include_history') == 'true'
-        history_days = int(request.query_params.get('history_days', 30))
+        symbol_ticker = request.query_params.get("symbol")
+        exchange_code = request.query_params.get("exchange")
+        include_history = request.query_params.get("include_history") == "true"
+        history_days = int(request.query_params.get("history_days", 30))
 
         if symbol_ticker and exchange_code:
             try:
                 symbol = Symbol.objects.get(symbol=symbol_ticker, exchange__code=exchange_code)
-                context['data']['symbol'] = format_symbol_for_llm(
+                context["data"]["symbol"] = format_symbol_for_llm(
                     symbol,
                     include_history=include_history,
                     history_days=history_days
                 )
             except Symbol.DoesNotExist:
-                context['data']['symbol'] = {"error": f"Symbol {symbol_ticker} not found on {exchange_code}"}
+                context["data"]["symbol"] = {"error": f"Symbol {symbol_ticker} not found on {exchange_code}"}
 
         # Portfolio data
-        portfolio_ids_str = request.query_params.get('portfolio_ids')
+        portfolio_ids_str = request.query_params.get("portfolio_ids")
         if portfolio_ids_str:
             try:
-                portfolio_ids = [int(pid) for pid in portfolio_ids_str.split(',')]
+                portfolio_ids = [int(pid) for pid in portfolio_ids_str.split(",")]
                 portfolios = Portfolio.objects.filter(user=request.user, id__in=portfolio_ids)
-                context['data']['portfolios'] = [format_portfolio_for_llm(p) for p in portfolios]
+                context["data"]["portfolios"] = [format_portfolio_for_llm(p) for p in portfolios]
             except (ValueError, TypeError):
-                context['data']['portfolios'] = {"error": "Invalid portfolio_ids format"}
+                context["data"]["portfolios"] = {"error": "Invalid portfolio_ids format"}
 
         # Market overview
-        if request.query_params.get('include_market_overview') == 'true':
-            exchange_filter = request.query_params.get('exchange_filter')
-            context['data']['market_overview'] = format_market_overview_for_llm(exchange_filter)
+        if request.query_params.get("include_market_overview") == "true":
+            exchange_filter = request.query_params.get("exchange_filter")
+            context["data"]["market_overview"] = format_market_overview_for_llm(exchange_filter)
 
         return Response(context)
 
@@ -1235,9 +1015,9 @@ class ChatWithLLM(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        message = request.data.get('message')
-        conversation_id = request.data.get('conversation_id')
-        context_params = request.data.get('context', {})
+        message = request.data.get("message")
+        conversation_id = request.data.get("conversation_id")
+        context_params = request.data.get("context", {})
 
         if not message:
             return Response(
@@ -1263,7 +1043,7 @@ class ChatWithLLM(APIView):
         # Save user message
         ConversationMessage.objects.create(
             conversation=conversation,
-            role='user',
+            role="user",
             content=message,
             context_data=context_params
         )
@@ -1274,7 +1054,7 @@ class ChatWithLLM(APIView):
             fallback_reply = "The analytics engine is not configured. Please contact support."
             ConversationMessage.objects.create(
                 conversation=conversation,
-                role='assistant',
+                role="assistant",
                 content=fallback_reply,
                 context_data={"error": str(exc)}
             )
@@ -1283,7 +1063,7 @@ class ChatWithLLM(APIView):
                     "role": msg.role,
                     "content": msg.content
                 }
-                for msg in conversation.messages.order_by('created_at')
+                for msg in conversation.messages.order_by("created_at")
             ]
             return Response(
                 {
@@ -1306,7 +1086,7 @@ class ChatWithLLM(APIView):
 
         ConversationMessage.objects.create(
             conversation=conversation,
-            role='assistant',
+            role="assistant",
             content=reply,
             context_data={
                 "analysis": analysis,
@@ -1320,7 +1100,7 @@ class ChatWithLLM(APIView):
                 "role": msg.role,
                 "content": msg.content
             }
-            for msg in conversation.messages.order_by('created_at')
+            for msg in conversation.messages.order_by("created_at")
         ]
 
         return Response({
@@ -1354,8 +1134,8 @@ class SaveChatResponse(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        conversation_id = request.data.get('conversation_id')
-        response = request.data.get('response')
+        conversation_id = request.data.get("conversation_id")
+        response = request.data.get("response")
 
         if not conversation_id or not response:
             return Response(
@@ -1374,7 +1154,7 @@ class SaveChatResponse(APIView):
         # Save assistant response
         ConversationMessage.objects.create(
             conversation=conversation,
-            role='assistant',
+            role="assistant",
             content=response
         )
 
@@ -1419,7 +1199,7 @@ async def chat_stream(request):
 
     await sync_to_async(ConversationMessage.objects.create)(
         conversation=conversation,
-        role='user',
+        role="user",
         content=message,
         context_data=context
     )
@@ -1517,7 +1297,7 @@ class ConversationDetail(APIView):
             )
 
         messages = []
-        for msg in conversation.messages.order_by('created_at'):
+        for msg in conversation.messages.order_by("created_at"):
             messages.append({
                 "role": msg.role,
                 "content": msg.content,
@@ -1587,9 +1367,9 @@ class CompareSymbols(APIView):
     def get(self, request):
         from .llm_helpers import format_symbol_for_llm
 
-        symbols_param = request.query_params.get('symbols')
-        include_history = request.query_params.get('include_history') == 'true'
-        history_days = int(request.query_params.get('history_days', 30))
+        symbols_param = request.query_params.get("symbols")
+        include_history = request.query_params.get("include_history") == "true"
+        history_days = int(request.query_params.get("history_days", 30))
 
         if not symbols_param:
             return Response(
@@ -1599,8 +1379,8 @@ class CompareSymbols(APIView):
 
         # Parse symbols
         symbol_pairs = []
-        for pair in symbols_param.split(','):
-            parts = pair.strip().split(':')
+        for pair in symbols_param.split(","):
+            parts = pair.strip().split(":")
             if len(parts) != 2:
                 return Response(
                     {"error": f"Invalid format for '{pair}'. Use SYMBOL:EXCHANGE"},
@@ -1629,7 +1409,7 @@ class CompareSymbols(APIView):
                 })
 
         # Build comparison summary
-        valid_symbols = [s for s in symbols_data if 'error' not in s]
+        valid_symbols = [s for s in symbols_data if "error" not in s]
 
         if not valid_symbols:
             return Response({
@@ -1638,43 +1418,43 @@ class CompareSymbols(APIView):
             }, status=status.HTTP_404_NOT_FOUND)
 
         # Comparative analysis
-        signal_ranking = {'STRONG_BUY': 5, 'BUY': 4, 'HOLD': 3, 'SELL': 2, 'STRONG_SELL': 1, 'NA': 0}
+        signal_ranking = {"STRONG_BUY": 5, "BUY": 4, "HOLD": 3, "SELL": 2, "STRONG_SELL": 1, "NA": 0}
 
         # Find strongest and weakest signals
-        all_signals = [s['signal'] for s in valid_symbols]
-        strongest_signal_value = max((signal_ranking.get(sig, 0) for sig in all_signals))
-        weakest_signal_value = min((signal_ranking.get(sig, 0) for sig in all_signals))
+        all_signals = [s["signal"] for s in valid_symbols]
+        strongest_signal_value = max(signal_ranking.get(sig, 0) for sig in all_signals)
+        weakest_signal_value = min(signal_ranking.get(sig, 0) for sig in all_signals)
 
         comparative_analysis = {
-            "highest_price": max(valid_symbols, key=lambda s: s['current_price']),
-            "lowest_price": min(valid_symbols, key=lambda s: s['current_price']),
-            "strongest_signal": [s['symbol'] for s in valid_symbols if signal_ranking.get(s['signal'], 0) == strongest_signal_value],
-            "weakest_signal": [s['symbol'] for s in valid_symbols if signal_ranking.get(s['signal'], 0) == weakest_signal_value],
-            "steepest_uptrend": max(valid_symbols, key=lambda s: s['trend_angle']) if valid_symbols else None,
-            "steepest_downtrend": min(valid_symbols, key=lambda s: s['trend_angle']) if valid_symbols else None,
+            "highest_price": max(valid_symbols, key=lambda s: s["current_price"]),
+            "lowest_price": min(valid_symbols, key=lambda s: s["current_price"]),
+            "strongest_signal": [s["symbol"] for s in valid_symbols if signal_ranking.get(s["signal"], 0) == strongest_signal_value],
+            "weakest_signal": [s["symbol"] for s in valid_symbols if signal_ranking.get(s["signal"], 0) == weakest_signal_value],
+            "steepest_uptrend": max(valid_symbols, key=lambda s: s["trend_angle"]) if valid_symbols else None,
+            "steepest_downtrend": min(valid_symbols, key=lambda s: s["trend_angle"]) if valid_symbols else None,
         }
 
         # Sector breakdown
         sectors = {}
         for s in valid_symbols:
-            sector = s.get('sector', 'Unknown')
+            sector = s.get("sector", "Unknown")
             sectors[sector] = sectors.get(sector, 0) + 1
-        comparative_analysis['sector_breakdown'] = sectors
+        comparative_analysis["sector_breakdown"] = sectors
 
         # Performance comparison (if history included)
         if include_history:
             performance = []
             for s in valid_symbols:
-                if 'price_statistics' in s:
+                if "price_statistics" in s:
                     performance.append({
-                        'symbol': s['symbol'],
-                        'change_percent': s['price_statistics']['change_percent']
+                        "symbol": s["symbol"],
+                        "change_percent": s["price_statistics"]["change_percent"]
                     })
             if performance:
-                performance.sort(key=lambda x: x['change_percent'], reverse=True)
-                comparative_analysis['performance_ranking'] = performance
-                comparative_analysis['best_performer'] = performance[0] if performance else None
-                comparative_analysis['worst_performer'] = performance[-1] if performance else None
+                performance.sort(key=lambda x: x["change_percent"], reverse=True)
+                comparative_analysis["performance_ranking"] = performance
+                comparative_analysis["best_performer"] = performance[0] if performance else None
+                comparative_analysis["worst_performer"] = performance[-1] if performance else None
 
         # Summary
         summary_parts = [f"Comparing {len(valid_symbols)} symbols:"]
@@ -1708,11 +1488,11 @@ class BacktestStrategy(APIView):
     """
 
     def get(self, request):
-        symbol_ticker = request.query_params.get('symbol')
-        exchange_code = request.query_params.get('exchange')
-        days_ago = int(request.query_params.get('days_ago', 30))
-        strategy = request.query_params.get('strategy', 'buy_hold')
-        investment = float(request.query_params.get('investment', 10000))
+        symbol_ticker = request.query_params.get("symbol")
+        exchange_code = request.query_params.get("exchange")
+        days_ago = int(request.query_params.get("days_ago", 30))
+        strategy = request.query_params.get("strategy", "buy_hold")
+        investment = float(request.query_params.get("investment", 10000))
 
         if not symbol_ticker or not exchange_code:
             return Response(
@@ -1735,18 +1515,18 @@ class BacktestStrategy(APIView):
         historical = DaySymbol.objects.filter(
             symbol=symbol,
             date__gte=start_date
-        ).order_by('date')
+        ).order_by("date")
 
         if not historical.exists():
             return Response(
-                {"error": f"No historical data found for the specified period"},
+                {"error": "No historical data found for the specified period"},
                 status=status.HTTP_404_NOT_FOUND
             )
 
         # Execute strategy
-        if strategy == 'buy_hold':
+        if strategy == "buy_hold":
             result = self._backtest_buy_hold(symbol, historical, investment)
-        elif strategy == 'signal_follow':
+        elif strategy == "signal_follow":
             result = self._backtest_signal_follow(symbol, historical, investment)
         else:
             return Response(
@@ -1814,7 +1594,7 @@ class BacktestStrategy(APIView):
         from decimal import Decimal
 
         cash = Decimal(str(investment))
-        shares = Decimal('0')
+        shares = Decimal("0")
         transactions = []
         position_open = False
 
@@ -1823,7 +1603,7 @@ class BacktestStrategy(APIView):
             price = Decimal(str(day.close))
 
             # Buy signals
-            if signal in ['BUY', 'STRONG_BUY'] and not position_open and cash > 0:
+            if signal in ["BUY", "STRONG_BUY"] and not position_open and cash > 0:
                 shares_to_buy = cash / price
                 cost = shares_to_buy * price
 
@@ -1841,7 +1621,7 @@ class BacktestStrategy(APIView):
                 position_open = True
 
             # Sell signals
-            elif signal in ['SELL', 'STRONG_SELL'] and position_open and shares > 0:
+            elif signal in ["SELL", "STRONG_SELL"] and position_open and shares > 0:
                 proceeds = shares * price
 
                 transactions.append({
@@ -1854,7 +1634,7 @@ class BacktestStrategy(APIView):
                 })
 
                 cash += proceeds
-                shares = Decimal('0')
+                shares = Decimal("0")
                 position_open = False
 
         # Calculate final value (liquidate any remaining position)
@@ -1903,10 +1683,10 @@ class MarketBenchmarks(APIView):
     """
 
     def get(self, request):
-        indices_param = request.query_params.get('indices', '^GSPC')  # Default to S&P 500
-        days = int(request.query_params.get('days', 30))
+        indices_param = request.query_params.get("indices", "^GSPC")  # Default to S&P 500
+        days = int(request.query_params.get("days", 30))
 
-        index_symbols = [s.strip() for s in indices_param.split(',')]
+        index_symbols = [s.strip() for s in indices_param.split(",")]
 
         results = []
         start_date = datetime.now().date() - timedelta(days=days)
@@ -1919,7 +1699,7 @@ class MarketBenchmarks(APIView):
                 historical = MarketIndexData.objects.filter(
                     index=index,
                     date__gte=start_date
-                ).order_by('date')
+                ).order_by("date")
 
                 if not historical.exists():
                     continue
@@ -1997,10 +1777,10 @@ class DayTradingRecommendations(APIView):
     def get(self, request):
         from decimal import Decimal
 
-        bankroll = Decimal(str(request.query_params.get('bankroll', '10000')))
-        max_picks = int(request.query_params.get('max_picks', 5))
-        exchange_filter = request.query_params.get('exchange')
-        force_refresh = request.query_params.get('refresh', '').lower() == 'true'
+        bankroll = Decimal(str(request.query_params.get("bankroll", "10000")))
+        max_picks = int(request.query_params.get("max_picks", 5))
+        exchange_filter = request.query_params.get("exchange")
+        force_refresh = request.query_params.get("refresh", "").lower() == "true"
 
         today = datetime.now().date()
 
@@ -2094,7 +1874,7 @@ class DayTradingRecommendations(APIView):
     def _format_recommendations(self, recommendations, bankroll):
         """Format recommendations for API response"""
         rec_list = []
-        total_allocated = Decimal('0')
+        total_allocated = Decimal("0")
 
         for rec in recommendations:
             shares = int(rec.recommended_allocation / Decimal(str(rec.entry_price))) if rec.entry_price else 0
@@ -2105,50 +1885,49 @@ class DayTradingRecommendations(APIView):
             potential_loss = shares * (Decimal(str(rec.entry_price)) - Decimal(str(rec.stop_loss_price)))
 
             rec_list.append({
-                'rank': rec.rank,
-                'symbol': rec.symbol.symbol,
-                'exchange': rec.symbol.exchange.code,
-                'company_name': rec.symbol.name,
-                'confidence_score': self._safe_float(round(rec.confidence_score, 1)),
-                'entry_price': self._safe_float(round(rec.entry_price, 2)),
-                'target_price': self._safe_float(round(rec.target_price, 2)),
-                'stop_loss': self._safe_float(round(rec.stop_loss_price, 2)),
-                'recommended_shares': shares,
-                'position_cost': self._safe_float(actual_cost),
-                'potential_gain': self._safe_float(potential_gain),
-                'potential_loss': self._safe_float(potential_loss),
-                'risk_reward_ratio': self._safe_float(potential_gain / potential_loss) if potential_loss > 0 else 0,
-                'reason': rec.recommendation_reason,
-                'score_breakdown': {
-                    'signal': self._safe_float(round(rec.signal_score, 1)),
-                    'momentum': self._safe_float(round(rec.momentum_score, 1)),
-                    'volume': self._safe_float(round(rec.volume_score, 1)),
-                    'prediction': self._safe_float(round(rec.prediction_score, 1)),
-                    'technical': self._safe_float(round(rec.technical_score, 1))
+                "rank": rec.rank,
+                "symbol": rec.symbol.symbol,
+                "exchange": rec.symbol.exchange.code,
+                "company_name": rec.symbol.name,
+                "confidence_score": self._safe_float(round(rec.confidence_score, 1)),
+                "entry_price": self._safe_float(round(rec.entry_price, 2)),
+                "target_price": self._safe_float(round(rec.target_price, 2)),
+                "stop_loss": self._safe_float(round(rec.stop_loss_price, 2)),
+                "recommended_shares": shares,
+                "position_cost": self._safe_float(actual_cost),
+                "potential_gain": self._safe_float(potential_gain),
+                "potential_loss": self._safe_float(potential_loss),
+                "risk_reward_ratio": self._safe_float(potential_gain / potential_loss) if potential_loss > 0 else 0,
+                "reason": rec.recommendation_reason,
+                "score_breakdown": {
+                    "signal": self._safe_float(round(rec.signal_score, 1)),
+                    "momentum": self._safe_float(round(rec.momentum_score, 1)),
+                    "volume": self._safe_float(round(rec.volume_score, 1)),
+                    "prediction": self._safe_float(round(rec.prediction_score, 1)),
+                    "technical": self._safe_float(round(rec.technical_score, 1))
                 }
             })
 
-        summary = {
-            'date': recommendations[0].recommendation_date.isoformat(),
-            'bankroll': self._safe_float(bankroll),
-            'total_allocated': self._safe_float(total_allocated),
-            'cash_reserve': self._safe_float(bankroll - total_allocated),
-            'recommendations': rec_list,
-            'strategy': 'Day Trading - Buy at open, Sell before close',
-            'risk_management': {
-                'stop_loss_rule': '1.5% below entry',
-                'target_profit': '2% above entry',
-                'max_position_size': '35% of bankroll'
+        return {
+            "date": recommendations[0].recommendation_date.isoformat(),
+            "bankroll": self._safe_float(bankroll),
+            "total_allocated": self._safe_float(total_allocated),
+            "cash_reserve": self._safe_float(bankroll - total_allocated),
+            "recommendations": rec_list,
+            "strategy": "Day Trading - Buy at open, Sell before close",
+            "risk_management": {
+                "stop_loss_rule": "1.5% below entry",
+                "target_profit": "2% above entry",
+                "max_position_size": "35% of bankroll"
             },
-            'analysis': {
-                'picks_count': len(rec_list),
-                'avg_confidence': self._safe_float(round(sum(r['confidence_score'] or 0 for r in rec_list) / len(rec_list), 1)) if rec_list else 0,
-                'total_potential_gain': self._safe_float(sum(Decimal(str(r['potential_gain'])) for r in rec_list if r['potential_gain'] is not None)),
-                'total_potential_loss': self._safe_float(sum(Decimal(str(r['potential_loss'])) for r in rec_list if r['potential_loss'] is not None))
+            "analysis": {
+                "picks_count": len(rec_list),
+                "avg_confidence": self._safe_float(round(sum(r["confidence_score"] or 0 for r in rec_list) / len(rec_list), 1)) if rec_list else 0,
+                "total_potential_gain": self._safe_float(sum(Decimal(str(r["potential_gain"])) for r in rec_list if r["potential_gain"] is not None)),
+                "total_potential_loss": self._safe_float(sum(Decimal(str(r["potential_loss"])) for r in rec_list if r["potential_loss"] is not None))
             }
         }
 
-        return summary
 
     def _format_existing_recommendations(self, existing, bankroll):
         """Format already-generated recommendations"""
@@ -2175,24 +1954,25 @@ class PortfolioTransactionViewSet(viewsets.ModelViewSet):
         queryset = PortfolioTransaction.objects.filter(portfolio__user=self.request.user)
 
         # Filter by portfolio if specified
-        portfolio_id = self.request.query_params.get('portfolio')
+        portfolio_id = self.request.query_params.get("portfolio")
         if portfolio_id:
             queryset = queryset.filter(portfolio_id=portfolio_id)
 
         return queryset
 
     def get_serializer_class(self):
-        from .serializers_transactions import PortfolioTransactionSerializer, PortfolioTransactionCreateSerializer
+        from .serializers_transactions import PortfolioTransactionCreateSerializer, PortfolioTransactionSerializer
 
-        if self.action == 'create':
+        if self.action == "create":
             return PortfolioTransactionCreateSerializer
         return PortfolioTransactionSerializer
 
     def perform_create(self, serializer):
         """Validate portfolio ownership before creating transaction"""
-        portfolio = serializer.validated_data.get('portfolio')
+        portfolio = serializer.validated_data.get("portfolio")
         if portfolio.user != self.request.user:
-            raise rest_serializers.ValidationError("You can only add transactions to your own portfolios")
+            msg = "You can only add transactions to your own portfolios"
+            raise rest_serializers.ValidationError(msg)
         serializer.save()
 
 
@@ -2226,13 +2006,15 @@ class LivePrice(APIView):
     """
 
     def get(self, request):
-        import yfinance as yf
         from decimal import Decimal, InvalidOperation
-        from django.utils import timezone
-        from django.db import transaction as db_transaction
 
-        symbol_ticker = request.query_params.get('symbol')
-        exchange_code = request.query_params.get('exchange')
+        from django.db import transaction as db_transaction
+        from django.utils import timezone
+
+        import yfinance as yf
+
+        symbol_ticker = request.query_params.get("symbol")
+        exchange_code = request.query_params.get("exchange")
 
         if not symbol_ticker or not exchange_code:
             return Response(
@@ -2254,10 +2036,7 @@ class LivePrice(APIView):
         cached_time = symbol.price_updated_at
 
         # Resolve ticker for Yahoo Finance (special handling for TSX)
-        if exchange_code in ['TSE', 'TO']:
-            yf_ticker = f"{symbol_ticker}.TO"
-        else:
-            yf_ticker = symbol_ticker
+        yf_ticker = f"{symbol_ticker}.TO" if exchange_code in ["TSE", "TO"] else symbol_ticker
 
         try:
             # Fetch live price from Yahoo Finance
@@ -2269,10 +2048,10 @@ class LivePrice(APIView):
             # Try multiple methods to get the price
             try:
                 # Method 1: regularMarketPrice from info
-                live_price = ticker.info.get('regularMarketPrice')
+                live_price = ticker.info.get("regularMarketPrice")
                 if not live_price:
                     # Method 2: currentPrice from info
-                    live_price = ticker.info.get('currentPrice')
+                    live_price = ticker.info.get("currentPrice")
             except Exception:
                 pass
 
@@ -2281,7 +2060,7 @@ class LivePrice(APIView):
                 try:
                     hist = ticker.history(period="1d")
                     if not hist.empty:
-                        live_price = hist['Close'].iloc[-1]
+                        live_price = hist["Close"].iloc[-1]
                 except Exception:
                     pass
 
@@ -2299,7 +2078,7 @@ class LivePrice(APIView):
 
             # Convert to Decimal safely
             try:
-                live_price_decimal = Decimal(str(live_price)).quantize(Decimal('0.01'))
+                live_price_decimal = Decimal(str(live_price)).quantize(Decimal("0.01"))
             except (InvalidOperation, TypeError):
                 return Response(
                     {"error": "Invalid price data received"},
@@ -2310,7 +2089,7 @@ class LivePrice(APIView):
             with db_transaction.atomic():
                 symbol.latest_price = live_price_decimal
                 symbol.price_updated_at = timezone.now()
-                symbol.save(update_fields=['latest_price', 'price_updated_at'])
+                symbol.save(update_fields=["latest_price", "price_updated_at"])
 
             # Check market status
             from .tasks.portfolio_price_update import is_market_open
@@ -2338,7 +2117,7 @@ class LivePrice(APIView):
         except Exception as e:
             return Response(
                 {
-                    "error": f"Failed to fetch live price: {str(e)}",
+                    "error": f"Failed to fetch live price: {e!s}",
                     "symbol": symbol_ticker,
                     "exchange": exchange_code,
                     "cached_price": cached_price

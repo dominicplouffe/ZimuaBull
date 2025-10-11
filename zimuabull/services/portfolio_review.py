@@ -2,18 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from decimal import Decimal
 
-from django.db.models import Avg, F, Q
+from django.db.models import Avg, F
 from django.utils import timezone
 
 from zimuabull.daytrading.constants import (
-    MAX_POSITION_PERCENT,
-    MAX_RECOMMENDATIONS,
     PER_TRADE_RISK_FRACTION,
 )
-from decimal import Decimal
-
 from zimuabull.models import DayTradePosition, Portfolio, PortfolioSnapshot
 
 
@@ -25,9 +21,9 @@ class PortfolioMetrics:
     end_value: float
     positions_taken: int
     closed_positions: int
-    win_rate: Optional[float]
-    avg_return: Optional[float]
-    total_return: Optional[float]
+    win_rate: float | None
+    avg_return: float | None
+    total_return: float | None
 
 
 def _portfolio_value(portfolio: Portfolio, target_date: date) -> float:
@@ -72,7 +68,6 @@ def _compute_metrics(portfolio: Portfolio, start_date: date, end_date: date) -> 
         )
         total_return = returns.aggregate(sum=Avg("pct_return"))["sum"]
 
-    print('0-----', total_return)
     snapshot_start = _portfolio_value(portfolio, start_date)
     if snapshot_start:
         start_value = snapshot_start
@@ -98,9 +93,9 @@ def _compute_metrics(portfolio: Portfolio, start_date: date, end_date: date) -> 
     )
 
 
-def _recommendations_for_metrics(metrics: PortfolioMetrics) -> Dict[str, List[str]]:
-    human: List[str] = []
-    codex: List[str] = []
+def _recommendations_for_metrics(metrics: PortfolioMetrics) -> dict[str, list[str]]:
+    human: list[str] = []
+    codex: list[str] = []
     pct = metrics.performance_pct
 
     if pct <= -2:
@@ -151,14 +146,14 @@ def _recommendations_for_metrics(metrics: PortfolioMetrics) -> Dict[str, List[st
     return {"human": human, "codex": codex}
 
 
-def generate_weekly_portfolio_report(reference_date: Optional[date] = None) -> str:
+def generate_weekly_portfolio_report(reference_date: date | None = None) -> str:
     reference_date = reference_date or timezone.now().date()
     end_date = reference_date
     start_date = end_date - timedelta(days=7)
 
     portfolios = Portfolio.objects.filter(is_active=True).select_related("exchange", "user")
 
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append(f"# Weekly Portfolio Trading Review ({end_date.isoformat()})")
     lines.append("")
 

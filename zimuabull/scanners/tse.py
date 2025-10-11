@@ -1,18 +1,18 @@
-from datetime import datetime, timedelta, timezone
 import logging
+from datetime import UTC, datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
 
 from zimuabull.constants import EXCHANGES
 from zimuabull.models import (
-    Symbol,
-    Exchange,
     CloseBucketChoice,
     DayPrediction,
     DayPredictionChoice,
+    Exchange,
+    Symbol,
 )
-
-import pandas as pd
-import numpy as np
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class BaseScanner:
         self.suffix = EXCHANGES[exchange.code].get("suffix", None)
 
     def most_recent_trading_day(self):
-        dt = datetime.now(tz=timezone.utc).date()
+        dt = datetime.now(tz=UTC).date()
 
         # If today is a weekend, then we need to go back to the most recent Friday
         if dt.weekday() == 5:
@@ -69,7 +69,7 @@ class BaseScanner:
                 close = float(row["Close"])
                 volume = int(row["Volume"])
 
-                if dt < datetime.now(tz=timezone.utc).date() - timedelta(days=365):
+                if dt < datetime.now(tz=UTC).date() - timedelta(days=365):
                     continue
 
                 data["date"].append(dt)
@@ -88,11 +88,10 @@ class BaseScanner:
 
                 if i == 0:
                     data["obv_signal"].append(0)
+                elif data["obv"][i - 1] < data["obv"][i]:
+                    data["obv_signal"].append(1)
                 else:
-                    if data["obv"][i - 1] < data["obv"][i]:
-                        data["obv_signal"].append(1)
-                    else:
-                        data["obv_signal"].append(0)
+                    data["obv_signal"].append(0)
                 if i < 3:
                     data["obv_signal_sum"].append(0)
                 else:
@@ -103,7 +102,7 @@ class BaseScanner:
                 else:
                     data["price_diff"].append(abs(close - data["close"][i - 1]))
             except ValueError as e:
-                logger.error(f"Error processing {row['Date']}: {e}")
+                logger.exception(f"Error processing {row['Date']}: {e}")
                 return None
 
             i += 1
@@ -135,8 +134,7 @@ class BaseScanner:
         slope = (N * sum_xy - sum_x * sum_y) / denominator
 
         # Calculate angle in degrees
-        angle = np.degrees(np.arctan(slope))
-        return angle
+        return np.degrees(np.arctan(slope))
 
     def get_close_bucket(self, res):
         # get the last value of the 30_day_close_trendline from res
@@ -144,7 +142,7 @@ class BaseScanner:
 
         if close_trend_line >= 5:
             return CloseBucketChoice.UP
-        elif close_trend_line <= -5:
+        if close_trend_line <= -5:
             return CloseBucketChoice.DOWN
         return CloseBucketChoice.NA
 
@@ -163,9 +161,9 @@ class BaseScanner:
             return
 
         # Calculate additional features for prediction
-        res['price_momentum'] = res['close'].pct_change(periods=5) * 100  # 5-day % change
-        res['volume_trend'] = res['obv_signal'].rolling(window=5).mean()  # 5-day avg OBV signal
-        res['volatility'] = res['price_diff'].rolling(window=10).std()  # 10-day volatility
+        res["price_momentum"] = res["close"].pct_change(periods=5) * 100  # 5-day % change
+        res["volume_trend"] = res["obv_signal"].rolling(window=5).mean()  # 5-day avg OBV signal
+        res["volatility"] = res["price_diff"].rolling(window=10).std()  # 10-day volatility
 
         positive_count = 0
         total_count = 0
@@ -175,11 +173,11 @@ class BaseScanner:
             row = res.iloc[i]
 
             # Get current values
-            price_momentum = row['price_momentum']
-            trend_angle = row['30_day_close_trendline']
-            volume_trend = row['volume_trend']
-            volatility = row['volatility']
-            obv_signal_sum = row['obv_signal_sum']
+            price_momentum = row["price_momentum"]
+            trend_angle = row["30_day_close_trendline"]
+            volume_trend = row["volume_trend"]
+            volatility = row["volatility"]
+            obv_signal_sum = row["obv_signal_sum"]
 
             # Initialize score
             score = 0
@@ -212,7 +210,7 @@ class BaseScanner:
             # 5. Volatility adjustment (high volatility = less confidence in trend)
             # Reduce score magnitude when volatility is high (less predictable)
             if volatility > 0:
-                avg_volatility = res['volatility'].mean()
+                avg_volatility = res["volatility"].mean()
                 if volatility > 1.5 * avg_volatility:  # High volatility
                     score *= 0.7  # Dampen the score
                 elif volatility < 0.5 * avg_volatility:  # Low volatility
@@ -230,8 +228,8 @@ class BaseScanner:
             future_price = None
             actual_movement = None
             if i + 5 < len(res):
-                current_close = row['close']
-                future_close = res.iloc[i + 5]['close']
+                current_close = row["close"]
+                future_close = res.iloc[i + 5]["close"]
                 price_change_pct = ((future_close - current_close) / current_close) * 100
 
                 # Determine actual movement (2% threshold for significant movement)
@@ -252,15 +250,15 @@ class BaseScanner:
             # Store prediction
             DayPrediction.objects.update_or_create(
                 symbol=symbol,
-                date=row['date'],
-                defaults=dict(
-                    buy_price=row['close'],
-                    sell_price=future_price if future_price else row['close'],
-                    diff=future_price - row['close'] if future_price else 0,
-                    prediction=prediction,
-                    buy_date=row['date'],
-                    sell_date=res.iloc[i + 5]['date'] if i + 5 < len(res) else None,
-                ),
+                date=row["date"],
+                defaults={
+                    "buy_price": row["close"],
+                    "sell_price": future_price if future_price else row["close"],
+                    "diff": future_price - row["close"] if future_price else 0,
+                    "prediction": prediction,
+                    "buy_date": row["date"],
+                    "sell_date": res.iloc[i + 5]["date"] if i + 5 < len(res) else None,
+                },
             )
 
         # Update symbol accuracy based on prediction accuracy
@@ -291,7 +289,7 @@ class BaseScanner:
                 dispatched_count += 1
                 logger.info(f"Dispatched task for {symbol.symbol} ({dispatched_count}/{total_symbols})")
             except Exception as e:
-                logger.error(f"Error dispatching task for {symbol.symbol}: {e}")
+                logger.exception(f"Error dispatching task for {symbol.symbol}: {e}")
 
         logger.info(f"Dispatched {dispatched_count} Celery tasks for {self.exchange.code}")
 

@@ -12,8 +12,9 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 
 import os
 from pathlib import Path
-from corsheaders.defaults import default_headers
+
 from celery.schedules import crontab
+from corsheaders.defaults import default_headers
 
 
 def get_env_variable(var_name, default_value=None):
@@ -68,7 +69,7 @@ MIDDLEWARE = [
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework.authentication.SessionAuthentication",
-        'rest_framework.authentication.TokenAuthentication',
+        "rest_framework.authentication.TokenAuthentication",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -142,12 +143,7 @@ CORS_ALLOW_METHODS = [
     "PUT",
 ]
 
-CORS_ALLOW_HEADERS = list(default_headers) + [
-    "WWW-AUTHORIZATION",
-    "HTTP_WWW_AUTHORIZATION",
-    "X-Fancontent-User",
-    "Authorization",
-]
+CORS_ALLOW_HEADERS = [*list(default_headers), "WWW-AUTHORIZATION", "HTTP_WWW_AUTHORIZATION", "X-Fancontent-User", "Authorization"]
 
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
@@ -254,62 +250,62 @@ CELERY_BEAT_SCHEDULE = {
     },
     "zimuabull.tasks.portfolio_price_update.market_pulse_update": {
         "task": "zimuabull.tasks.portfolio_price_update.market_pulse_update",
-        "schedule": crontab(minute='*/5'),  # Every 5 minutes
+        "schedule": crontab(minute="*/5"),  # Every 5 minutes
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_morning_session_early": {
         "task": "zimuabull.tasks.day_trading.run_morning_trading_session",
-        "schedule": crontab(hour=13, minute=15, day_of_week='1-5'),
+        "schedule": crontab(hour=13, minute=15, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_morning_session_late": {
         "task": "zimuabull.tasks.day_trading.run_morning_trading_session",
-        "schedule": crontab(hour=14, minute=15, day_of_week='1-5'),
+        "schedule": crontab(hour=14, minute=15, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_monitor": {
         "task": "zimuabull.tasks.day_trading.monitor_intraday_positions",
-        "schedule": crontab(minute='*/10', hour='13-20', day_of_week='1-5'),
+        "schedule": crontab(minute="*/10", hour="13-20", day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_close_session_early": {
         "task": "zimuabull.tasks.day_trading.close_intraday_positions",
-        "schedule": crontab(hour=19, minute=30, day_of_week='1-5'),
+        "schedule": crontab(hour=19, minute=30, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_close_session_late": {
         "task": "zimuabull.tasks.day_trading.close_intraday_positions",
-        "schedule": crontab(hour=20, minute=30, day_of_week='1-5'),
+        "schedule": crontab(hour=20, minute=30, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_generate_features": {
         "task": "zimuabull.tasks.day_trading.generate_daily_feature_snapshots",
-        "schedule": crontab(hour=11, minute=30, day_of_week='1-5'),
+        "schedule": crontab(hour=11, minute=30, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_complete_labels": {
         "task": "zimuabull.tasks.day_trading.complete_daily_feature_labels",
-        "schedule": crontab(hour=21, minute=30, day_of_week='1-5'),
+        "schedule": crontab(hour=21, minute=30, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_daily_report": {
         "task": "zimuabull.tasks.day_trading.daily_performance_report",
-        "schedule": crontab(hour=22, minute=0, day_of_week='1-5'),
+        "schedule": crontab(hour=22, minute=0, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_health_check": {
         "task": "zimuabull.tasks.day_trading.daily_trading_health_check",
-        "schedule": crontab(hour=21, minute=45, day_of_week='1-5'),
+        "schedule": crontab(hour=21, minute=45, day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_weekly_model_refresh": {
         "task": "zimuabull.tasks.day_trading.weekly_model_refresh",
-        "schedule": crontab(hour=22, minute=0, day_of_week='0'),
+        "schedule": crontab(hour=22, minute=0, day_of_week="0"),
         "options": {"queue": "pidashtasks"},
     },
     "day_trading_weekly_portfolio_review": {
         "task": "zimuabull.tasks.day_trading.weekly_portfolio_review",
-        "schedule": crontab(hour=14, minute=0, day_of_week='6'),
+        "schedule": crontab(hour=14, minute=0, day_of_week="6"),
         "options": {"queue": "pidashtasks"},
     },
 }

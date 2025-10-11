@@ -5,8 +5,7 @@ These functions prepare data in a way that's easy for LLMs like Claude and ChatG
 to understand and reason about.
 """
 
-from datetime import datetime, timedelta
-from .models import Symbol, DaySymbol, DayPrediction, Portfolio
+from .models import DayPrediction, DaySymbol, Symbol
 
 
 def format_symbol_for_llm(symbol, include_history=False, history_days=30):
@@ -22,10 +21,10 @@ def format_symbol_for_llm(symbol, include_history=False, history_days=30):
         dict: Contains summary text and structured data with optional historical prices
     """
     # Get latest prediction
-    latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by('-date').first()
+    latest_prediction = DayPrediction.objects.filter(symbol=symbol).order_by("-date").first()
 
     # Get recent price action
-    recent_days = DaySymbol.objects.filter(symbol=symbol).order_by('-date')[:min(history_days, 365)]
+    recent_days = DaySymbol.objects.filter(symbol=symbol).order_by("-date")[:min(history_days, 365)]
 
     # Build summary
     summary_parts = []
@@ -98,7 +97,7 @@ def format_symbol_for_llm(symbol, include_history=False, history_days=30):
         )
 
         # Calculate simple statistics for LLM
-        closes = [d['close'] for d in historical_data]
+        closes = [d["close"] for d in historical_data]
         result["price_statistics"] = {
             "min": round(min(closes), 2),
             "max": round(max(closes), 2),
@@ -162,7 +161,7 @@ def format_portfolio_for_llm(portfolio):
     gain_loss = portfolio.total_gain_loss()
     gain_loss_pct = portfolio.total_gain_loss_percent()
 
-    holdings = portfolio.holdings.filter(status='ACTIVE')
+    holdings = portfolio.holdings.filter(status="ACTIVE")
 
     # Build summary
     summary_parts = []
@@ -200,7 +199,7 @@ def format_portfolio_for_llm(portfolio):
             "symbol": holding.symbol.symbol,
             "name": holding.symbol.name,
             "quantity": float(holding.quantity),
-            "purchase_price": float(holding.purchase_price),
+            "average_cost": float(holding.average_cost),
             "current_price": float(holding.symbol.last_close),
             "cost_basis": holding.cost_basis(),
             "current_value": holding.current_value(),
@@ -240,7 +239,7 @@ def format_market_overview_for_llm(exchange_code=None):
 
     # Count by signal
     signal_counts = {}
-    for signal in ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL', 'NA']:
+    for signal in ["STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL", "NA"]:
         signal_counts[signal] = symbols.filter(obv_status=signal).count()
 
     total = symbols.count()
@@ -269,8 +268,8 @@ def format_market_overview_for_llm(exchange_code=None):
         "exchange": exchange_code,
         "total_symbols": total,
         "signal_distribution": signal_counts,
-        "bullish_percentage": (signal_counts['STRONG_BUY'] + signal_counts['BUY']) / total * 100 if total > 0 else 0,
-        "bearish_percentage": (signal_counts['STRONG_SELL'] + signal_counts['SELL']) / total * 100 if total > 0 else 0
+        "bullish_percentage": (signal_counts["STRONG_BUY"] + signal_counts["BUY"]) / total * 100 if total > 0 else 0,
+        "bearish_percentage": (signal_counts["STRONG_SELL"] + signal_counts["SELL"]) / total * 100 if total > 0 else 0
     }
 
 
@@ -305,52 +304,3 @@ Key Indicators:
 - Accuracy: Historical prediction accuracy (0.0 to 1.0)
 
 Important: You provide analysis and insights, not financial advice. Always remind users to do their own research and consult financial advisors for investment decisions."""
-
-
-def format_conversation_context(user, query, **kwargs):
-    """
-    Build full context for LLM including user data, query, and relevant information.
-
-    Args:
-        user: Django User instance
-        query: User's question/message
-        **kwargs: Additional context (portfolio_ids, symbol, exchange, etc.)
-
-    Returns:
-        dict: Full context for LLM
-    """
-    context = {
-        "system_prompt": build_system_prompt(),
-        "user_query": query,
-        "timestamp": datetime.now().isoformat(),
-        "user_context": {}
-    }
-
-    # Add user's portfolios if requested
-    if 'portfolio_ids' in kwargs:
-        portfolios = Portfolio.objects.filter(
-            user=user,
-            id__in=kwargs['portfolio_ids']
-        )
-        context['user_context']['portfolios'] = [
-            format_portfolio_for_llm(p) for p in portfolios
-        ]
-
-    # Add specific symbol if requested
-    if 'symbol' in kwargs and 'exchange' in kwargs:
-        try:
-            symbol = Symbol.objects.get(
-                symbol=kwargs['symbol'],
-                exchange__code=kwargs['exchange']
-            )
-            context['user_context']['symbol'] = format_symbol_for_llm(symbol)
-        except Symbol.DoesNotExist:
-            pass
-
-    # Add market overview if requested
-    if kwargs.get('include_market_overview'):
-        context['user_context']['market_overview'] = format_market_overview_for_llm(
-            kwargs.get('exchange')
-        )
-
-    return context

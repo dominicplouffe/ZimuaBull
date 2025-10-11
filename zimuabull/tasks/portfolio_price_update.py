@@ -1,11 +1,15 @@
-import yfinance as yf
-from celery import shared_task
+import datetime
+from decimal import Decimal, InvalidOperation
+
 from django.db import transaction
 from django.utils import timezone
-import datetime
+
 import pytz
-from decimal import Decimal, InvalidOperation
-from zimuabull.models import Portfolio, PortfolioHolding, Symbol, Exchange
+import yfinance as yf
+from celery import shared_task
+
+from zimuabull.models import Portfolio, PortfolioHolding
+
 
 def resolve_tsx_ticker(symbol, exchange_code):
     """
@@ -14,7 +18,7 @@ def resolve_tsx_ticker(symbol, exchange_code):
     Handles different ticker variations for Canadian stocks
     """
     # If exchange is TSX or TO, always append .TO
-    if exchange_code in ['TSE', 'TO']:
+    if exchange_code in ["TSE", "TO"]:
         return f"{symbol}.TO"
 
     return symbol  # For other exchanges, return as-is
@@ -30,12 +34,12 @@ def safe_decimal_convert(value):
         Decimal representation or 0 if conversion fails
     """
     if value is None:
-        return Decimal('0')
+        return Decimal("0")
 
     try:
-        return Decimal(str(value)).quantize(Decimal('0.01'))
+        return Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, TypeError):
-        return Decimal('0')
+        return Decimal("0")
 
 @shared_task
 def update_portfolio_symbols_prices():
@@ -66,7 +70,7 @@ def update_portfolio_symbols_prices():
             if exchange.code not in checked_exchanges:
                 checked_exchanges[exchange.code] = is_market_open(exchange.code)
 
-            market_open = checked_exchanges[exchange.code]
+            checked_exchanges[exchange.code]
 
             try:
                 # Resolve ticker with special handling for TSX
@@ -77,14 +81,11 @@ def update_portfolio_symbols_prices():
 
                 # Get price using different methods
                 try:
-                    latest_price = ticker.info.get('regularMarketPrice')
+                    latest_price = ticker.info.get("regularMarketPrice")
                 except Exception:
                     # Fallback to history method if info fails
                     latest_history = ticker.history(period="1d")
-                    if not latest_history.empty:
-                        latest_price = latest_history['Close'].iloc[-1]
-                    else:
-                        latest_price = None
+                    latest_price = latest_history["Close"].iloc[-1] if not latest_history.empty else None
 
                 # Validate and convert price and quantity
                 if latest_price is not None:
@@ -101,28 +102,25 @@ def update_portfolio_symbols_prices():
                         # Update the symbol's latest price
                         symbol.latest_price = latest_price_decimal
                         symbol.price_updated_at = timezone.now()
-                        symbol.save(update_fields=['latest_price', 'price_updated_at'])
+                        symbol.save(update_fields=["latest_price", "price_updated_at"])
 
                     successful_updates.append(f"{symbol.symbol} ({exchange.code}): ${latest_price_decimal}")
                 else:
                     failed_updates.append(f"{symbol.symbol} ({exchange.code}): No price data")
-                    print(f"Could not retrieve price for {symbol.symbol}")
 
             except Exception as e:
                 # Log the error, but continue processing other symbols
                 error_msg = f"Error updating price for {symbol.symbol} ({exchange.code}): {e}"
                 failed_updates.append(error_msg)
-                print(error_msg)
 
     # Generate summary report
-    report = {
+    return {
         "total_portfolios": len(portfolios),
         "market_status": checked_exchanges,
         "successful_updates": successful_updates,
         "failed_updates": failed_updates
     }
 
-    return report
 
 
 def update_market_indices():
@@ -145,9 +143,9 @@ def update_market_indices():
 
                 # Try to get current price first
                 try:
-                    current_price = ticker.info.get('regularMarketPrice')
+                    current_price = ticker.info.get("regularMarketPrice")
                     if not current_price:
-                        current_price = ticker.info.get('currentPrice')
+                        current_price = ticker.info.get("currentPrice")
                 except Exception:
                     current_price = None
 
@@ -155,7 +153,7 @@ def update_market_indices():
                 if not current_price:
                     hist = ticker.history(period="1d")
                     if not hist.empty:
-                        current_price = hist['Close'].iloc[-1]
+                        current_price = hist["Close"].iloc[-1]
 
                 if current_price:
                     # Update or create today's record
@@ -166,11 +164,11 @@ def update_market_indices():
                             index=index,
                             date=today,
                             defaults={
-                                'open': float(row['Open']),
-                                'high': float(row['High']),
-                                'low': float(row['Low']),
-                                'close': float(row['Close']),
-                                'volume': int(row['Volume']) if row['Volume'] > 0 else None,
+                                "open": float(row["Open"]),
+                                "high": float(row["High"]),
+                                "low": float(row["Low"]),
+                                "close": float(row["Close"]),
+                                "volume": int(row["Volume"]) if row["Volume"] > 0 else None,
                             }
                         )
                         indices_updated.append(f"{index.symbol}: ${current_price:.2f}")
@@ -180,10 +178,10 @@ def update_market_indices():
                     indices_failed.append(f"{index.symbol}: No price available")
 
             except Exception as e:
-                indices_failed.append(f"{index.symbol}: {str(e)}")
+                indices_failed.append(f"{index.symbol}: {e!s}")
 
     except Exception as e:
-        indices_failed.append(f"General error: {str(e)}")
+        indices_failed.append(f"General error: {e!s}")
 
     return {
         "updated": indices_updated,
@@ -205,7 +203,7 @@ def market_pulse_update():
     Returns comprehensive summary of all updates.
     """
     # Check if any major market is open
-    major_exchanges = ['TSE', 'NASDAQ', 'NYSE']
+    major_exchanges = ["TSE", "NASDAQ", "NYSE"]
     any_market_open = False
     market_status = {}
 
@@ -229,7 +227,7 @@ def market_pulse_update():
     indices_report = update_market_indices()
 
     # Combine reports
-    combined_report = {
+    return {
         "status": "completed",
         "timestamp": timezone.now().isoformat(),
         "market_status": market_status,
@@ -245,7 +243,6 @@ def market_pulse_update():
         }
     }
 
-    return combined_report
 
 def is_market_open(exchange_code):
     """
@@ -258,21 +255,21 @@ def is_market_open(exchange_code):
     """
     # Mapping of exchange codes to market indices and timezones
     exchange_market_map = {
-        'TO': {
-            'index': '^GSPTSE',    # S&P/TSX Composite index for Toronto Stock Exchange
-            'timezone': 'America/Toronto',
+        "TO": {
+            "index": "^GSPTSE",    # S&P/TSX Composite index for Toronto Stock Exchange
+            "timezone": "America/Toronto",
         },
-        'TSE': {
-            'index': '^GSPTSE',    # Alternate code for Toronto Stock Exchange
-            'timezone': 'America/Toronto',
+        "TSE": {
+            "index": "^GSPTSE",    # Alternate code for Toronto Stock Exchange
+            "timezone": "America/Toronto",
         },
-        'NYSE': {
-            'index': '^NYA',       # NYSE Composite index
-            'timezone': 'America/New_York',
+        "NYSE": {
+            "index": "^NYA",       # NYSE Composite index
+            "timezone": "America/New_York",
         },
-        'NASDAQ': {
-            'index': '^IXIC',      # NASDAQ Composite index
-            'timezone': 'America/New_York',
+        "NASDAQ": {
+            "index": "^IXIC",      # NASDAQ Composite index
+            "timezone": "America/New_York",
         }
     }
 
@@ -286,11 +283,11 @@ def is_market_open(exchange_code):
 
         # If exchange is not in our map, default to UTC
         exchange_info = exchange_market_map.get(exchange_code, {
-            'timezone': 'UTC'
+            "timezone": "UTC"
         })
 
         # Localize the current time to the exchange's timezone
-        tz = pytz.timezone(exchange_info['timezone'])
+        tz = pytz.timezone(exchange_info["timezone"])
         local_now = now.astimezone(tz)
         current_time = local_now.time()
         current_weekday = local_now.weekday()
@@ -299,14 +296,12 @@ def is_market_open(exchange_code):
         is_weekday = 0 <= current_weekday <= 4
 
         # Check if current time is within market hours
-        is_market_hours = (
+        return (
             is_weekday and
             market_open_time <= current_time <= market_close_time
         )
 
-        return is_market_hours
 
-    except Exception as e:
+    except Exception:
         # Log the error, default to assuming market is closed
-        print(f"Error checking market status for {exchange_code}: {e}")
         return False

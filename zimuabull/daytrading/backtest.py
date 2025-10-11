@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -30,8 +29,8 @@ class TradeResult:
 @dataclass
 class BacktestResult:
     equity_curve: pd.Series
-    trades: List[TradeResult] = field(default_factory=list)
-    summary: Dict = field(default_factory=dict)
+    trades: list[TradeResult] = field(default_factory=list)
+    summary: dict = field(default_factory=dict)
 
 
 def run_backtest(
@@ -50,7 +49,7 @@ def run_backtest(
     df = df.sort_values("trade_date")
 
     equity = []
-    trades: List[TradeResult] = []
+    trades: list[TradeResult] = []
     capital = bankroll
     max_drawdown = 0.0
     peak_capital = capital
@@ -100,7 +99,7 @@ def run_backtest(
         max_drawdown = max(max_drawdown, drawdown)
         equity.append((trade_date, capital))
 
-    equity_curve = pd.Series({idx: value for idx, value in equity}).sort_index()
+    equity_curve = pd.Series(dict(equity)).sort_index()
 
     total_return = (capital - bankroll) / bankroll if bankroll else 0
     annualized_return = (1 + total_return) ** (252 / len(equity_curve)) - 1 if len(equity_curve) > 0 else 0

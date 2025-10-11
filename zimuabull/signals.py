@@ -5,7 +5,7 @@ This module contains the logic for calculating BUY/SELL/HOLD signals
 based on technical indicators and predictions.
 """
 
-from .models import DaySymbolChoice, DayPrediction, DaySymbol
+from .models import DayPrediction, DaySymbol, DaySymbolChoice
 
 
 def calculate_trading_signal(symbol):
@@ -29,7 +29,7 @@ def calculate_trading_signal(symbol):
     # Get latest prediction
     latest_prediction = DayPrediction.objects.filter(
         symbol=symbol
-    ).order_by('-date').first()
+    ).order_by("-date").first()
 
     if not latest_prediction:
         return DaySymbolChoice.NA
@@ -37,7 +37,7 @@ def calculate_trading_signal(symbol):
     # Get latest day symbol data
     latest_day = DaySymbol.objects.filter(
         symbol=symbol
-    ).order_by('-date').first()
+    ).order_by("-date").first()
 
     if not latest_day:
         return DaySymbolChoice.NA
@@ -54,31 +54,31 @@ def calculate_trading_signal(symbol):
         return DaySymbolChoice.NA
 
     # STRONG_BUY: All bullish indicators align strongly
-    if (pred == 'POSITIVE' and
+    if (pred == "POSITIVE" and
         obv_sum >= 2 and
         trend > 15 and
-        bucket == 'UP' and
+        bucket == "UP" and
         accuracy >= 0.70):
         return DaySymbolChoice.STRONG_BUY
 
     # STRONG_SELL: All bearish indicators align strongly
-    if (pred == 'NEGATIVE' and
+    if (pred == "NEGATIVE" and
         obv_sum <= -2 and
         trend < -15 and
-        bucket == 'DOWN' and
+        bucket == "DOWN" and
         accuracy >= 0.70):
         return DaySymbolChoice.STRONG_SELL
 
     # BUY: Multiple bullish signals present
-    if ((pred == 'POSITIVE' and obv_sum >= 1) or
-        (pred == 'NEUTRAL' and obv_sum >= 2 and trend > 10) or
-        (pred == 'POSITIVE' and trend > 5 and obv_sum >= 0)):
+    if ((pred == "POSITIVE" and obv_sum >= 1) or
+        (pred == "NEUTRAL" and obv_sum >= 2 and trend > 10) or
+        (pred == "POSITIVE" and trend > 5 and obv_sum >= 0)):
         return DaySymbolChoice.BUY
 
     # SELL: Multiple bearish signals present
-    if ((pred == 'NEGATIVE' and obv_sum <= -1) or
-        (pred == 'NEUTRAL' and obv_sum <= -2 and trend < -10) or
-        (pred == 'NEGATIVE' and trend < -5 and obv_sum <= 0)):
+    if ((pred == "NEGATIVE" and obv_sum <= -1) or
+        (pred == "NEUTRAL" and obv_sum <= -2 and trend < -10) or
+        (pred == "NEGATIVE" and trend < -5 and obv_sum <= 0)):
         return DaySymbolChoice.SELL
 
     # HOLD: Default for mixed/weak signals
@@ -101,22 +101,22 @@ def get_signal_explanation(symbol):
     """
     latest_prediction = DayPrediction.objects.filter(
         symbol=symbol
-    ).order_by('-date').first()
+    ).order_by("-date").first()
 
     if not latest_prediction:
         return {
-            'signal': DaySymbolChoice.NA,
-            'explanation': 'No prediction data available'
+            "signal": DaySymbolChoice.NA,
+            "explanation": "No prediction data available"
         }
 
     latest_day = DaySymbol.objects.filter(
         symbol=symbol
-    ).order_by('-date').first()
+    ).order_by("-date").first()
 
     if not latest_day:
         return {
-            'signal': DaySymbolChoice.NA,
-            'explanation': 'No daily trading data available'
+            "signal": DaySymbolChoice.NA,
+            "explanation": "No daily trading data available"
         }
 
     pred = latest_prediction.prediction
@@ -136,11 +136,11 @@ def get_signal_explanation(symbol):
     explanation_parts.append(f"Accuracy: {accuracy:.1%}")
 
     return {
-        'signal': signal,
-        'prediction': pred,
-        'obv_signal_sum': obv_sum,
-        'trend_angle': round(trend, 2),
-        'price_bucket': bucket,
-        'accuracy': round(accuracy, 3),
-        'explanation': ' | '.join(explanation_parts)
+        "signal": signal,
+        "prediction": pred,
+        "obv_signal_sum": obv_sum,
+        "trend_angle": round(trend, 2),
+        "price_bucket": bucket,
+        "accuracy": round(accuracy, 3),
+        "explanation": " | ".join(explanation_parts)
     }

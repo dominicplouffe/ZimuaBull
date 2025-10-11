@@ -28,10 +28,12 @@ class Command(BaseCommand):
                 end_date=datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None,
             )
         except ValueError as exc:
-            raise CommandError(f"Invalid date format: {exc}") from exc
+            msg = f"Invalid date format: {exc}"
+            raise CommandError(msg) from exc
 
         if dataset.features.empty:
-            raise CommandError("No dataset rows available for the selected date range.")
+            msg = "No dataset rows available for the selected date range."
+            raise CommandError(msg)
 
         model, feature_columns = load_model()
 

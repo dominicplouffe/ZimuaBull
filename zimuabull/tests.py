@@ -69,25 +69,23 @@ class TradingEngineTests(TestCase):
         self.portfolio.refresh_from_db()
         self.symbol.refresh_from_db()
 
-        self.assertEqual(len(positions), 1)
+        assert len(positions) == 1
         position = positions[0]
-        self.assertEqual(position.status, DayTradePositionStatus.OPEN)
-        self.assertEqual(position.shares, Decimal("10"))
-        self.assertEqual(self.portfolio.cash_balance, Decimal("9000.00"))
-        self.assertEqual(self.symbol.latest_price, Decimal("100.00"))
+        assert position.status == DayTradePositionStatus.OPEN
+        assert position.shares == Decimal("10")
+        assert self.portfolio.cash_balance == Decimal("9000.00")
+        assert self.symbol.latest_price == Decimal("100.00")
 
         close_all_positions(self.portfolio)
         self.portfolio.refresh_from_db()
 
-        self.assertEqual(self.portfolio.cash_balance, Decimal("10100.00"))
+        assert self.portfolio.cash_balance == Decimal("10100.00")
         position.refresh_from_db()
-        self.assertEqual(position.status, DayTradePositionStatus.CLOSED)
-        self.assertEqual(position.exit_price, Decimal("110.00"))
+        assert position.status == DayTradePositionStatus.CLOSED
+        assert position.exit_price == Decimal("110.00")
 
-        self.assertEqual(PortfolioTransaction.objects.filter(portfolio=self.portfolio).count(), 2)
-        self.assertTrue(
-            PortfolioSnapshot.objects.filter(portfolio=self.portfolio, date=timezone.now().date()).exists()
-        )
+        assert PortfolioTransaction.objects.filter(portfolio=self.portfolio).count() == 2
+        assert PortfolioSnapshot.objects.filter(portfolio=self.portfolio, date=timezone.now().date()).exists()
 
     @patch("zimuabull.daytrading.trading_engine.fetch_live_price", return_value=None)
     def test_execute_recommendations_idempotent(self, _mock_fetch_price):
@@ -99,5 +97,5 @@ class TradingEngineTests(TestCase):
 
         execute_recommendations([rec], self.portfolio, trade_date)
 
-        self.assertEqual(DayTradePosition.objects.filter(portfolio=self.portfolio).count(), 1)
-        self.assertEqual(Portfolio.objects.get(id=self.portfolio.id).cash_balance, cash_after_first)
+        assert DayTradePosition.objects.filter(portfolio=self.portfolio).count() == 1
+        assert Portfolio.objects.get(id=self.portfolio.id).cash_balance == cash_after_first

@@ -1,10 +1,12 @@
 import math
-from datetime import date, timedelta
+from collections.abc import Iterable
+from datetime import date
 from decimal import Decimal
-from typing import Dict, Iterable, Optional, Tuple
 
 import pandas as pd
+
 from zimuabull.models import DaySymbol, FeatureSnapshot, Symbol
+
 from .constants import (
     ATR_WINDOW,
     FEATURE_VERSION,
@@ -14,7 +16,7 @@ from .constants import (
 )
 
 
-def _encode_close_bucket(bucket: Optional[str]) -> int:
+def _encode_close_bucket(bucket: str | None) -> int:
     if bucket == "UP":
         return 1
     if bucket == "DOWN":
@@ -22,7 +24,7 @@ def _encode_close_bucket(bucket: Optional[str]) -> int:
     return 0
 
 
-def _obv_status_to_numeric(status: Optional[str]) -> int:
+def _obv_status_to_numeric(status: str | None) -> int:
     mapping = {
         "STRONG_BUY": 2,
         "BUY": 1,
@@ -84,7 +86,7 @@ def _history_dataframe(symbol: Symbol, end_date: date, limit: int) -> pd.DataFra
     return df
 
 
-def compute_feature_row(symbol: Symbol, trade_date: date) -> Optional[Dict]:
+def compute_feature_row(symbol: Symbol, trade_date: date) -> dict | None:
     """
     Build a feature dictionary for `symbol` on `trade_date`.
     Utilises data strictly prior to `trade_date` to avoid look-ahead bias.
@@ -99,14 +101,14 @@ def compute_feature_row(symbol: Symbol, trade_date: date) -> Optional[Dict]:
     returns = closes.pct_change()
     volumes = hist_df["volume"]
 
-    def sanitize(value: float) -> Optional[float]:
+    def sanitize(value: float) -> float | None:
         if value is None:
             return None
         if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
             return None
         return float(value)
 
-    features: Dict[str, Optional[float]] = {}
+    features: dict[str, float | None] = {}
 
     for window in LOOKBACK_WINDOWS:
         if len(returns) >= window + 1:
@@ -158,7 +160,7 @@ def compute_feature_row(symbol: Symbol, trade_date: date) -> Optional[Dict]:
     }
 
 
-def _compute_labels(symbol: Symbol, trade_day: DaySymbol) -> Dict:
+def _compute_labels(symbol: Symbol, trade_day: DaySymbol) -> dict:
     open_price = float(trade_day.open)
     close_price = float(trade_day.close)
     high_price = float(trade_day.high)
@@ -180,7 +182,7 @@ def _compute_labels(symbol: Symbol, trade_day: DaySymbol) -> Dict:
     }
 
 
-def build_feature_snapshot(symbol: Symbol, trade_date: date, overwrite: bool = False) -> Optional[FeatureSnapshot]:
+def build_feature_snapshot(symbol: Symbol, trade_date: date, overwrite: bool = False) -> FeatureSnapshot | None:
     """
     Create or update a FeatureSnapshot for the given symbol/date.
     """
@@ -213,7 +215,7 @@ def build_feature_snapshot(symbol: Symbol, trade_date: date, overwrite: bool = F
     return snapshot
 
 
-def build_features_for_date(trade_date: date, symbols: Optional[Iterable[Symbol]] = None, overwrite: bool = False) -> int:
+def build_features_for_date(trade_date: date, symbols: Iterable[Symbol] | None = None, overwrite: bool = False) -> int:
     """
     Generate feature snapshots for all provided symbols on the given trade_date.
     Returns the number of snapshots created/updated.
@@ -231,8 +233,8 @@ def build_features_for_date(trade_date: date, symbols: Optional[Iterable[Symbol]
 
 def backfill_features(
     start_date: date,
-    end_date: Optional[date] = None,
-    symbols: Optional[Iterable[Symbol]] = None,
+    end_date: date | None = None,
+    symbols: Iterable[Symbol] | None = None,
     overwrite: bool = False,
 ) -> int:
     """
@@ -257,7 +259,7 @@ def backfill_features(
     return total_processed
 
 
-def update_labels_for_date(trade_date: date, symbols: Optional[Iterable[Symbol]] = None) -> int:
+def update_labels_for_date(trade_date: date, symbols: Iterable[Symbol] | None = None) -> int:
     """
     Populate label fields for FeatureSnapshots on the given trade_date
     using finalized DaySymbol data.
@@ -280,7 +282,7 @@ def update_labels_for_date(trade_date: date, symbols: Optional[Iterable[Symbol]]
 
         labels = _compute_labels(snapshot.symbol, trade_day)
 
-        def _to_decimal(value: Optional[float], quant: str = "0.0001") -> Optional[Decimal]:
+        def _to_decimal(value: float | None, quant: str = "0.0001") -> Decimal | None:
             if value is None:
                 return None
             return Decimal(str(value)).quantize(Decimal(quant))

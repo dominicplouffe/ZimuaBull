@@ -1,17 +1,16 @@
-from typing import Optional
 
 from django.db import transaction
 
 from zimuabull.models import (
     DayTradePosition,
     Portfolio,
+    PortfolioHolding,
     PortfolioSnapshot,
     PortfolioTransaction,
-    PortfolioHolding,
 )
 
 
-def delete_portfolio(portfolio_id: int, *, user_id: Optional[int] = None) -> dict:
+def delete_portfolio(portfolio_id: int, *, user_id: int | None = None) -> dict:
     """
     Remove a portfolio and all of its associated data (transactions, holdings, snapshots, day-trade positions).
 
@@ -32,7 +31,8 @@ def delete_portfolio(portfolio_id: int, *, user_id: Optional[int] = None) -> dic
 
     portfolio = queryset.select_related("user").first()
     if portfolio is None:
-        raise Portfolio.DoesNotExist(f"Portfolio {portfolio_id} not found.")
+        msg = f"Portfolio {portfolio_id} not found."
+        raise Portfolio.DoesNotExist(msg)
 
     with transaction.atomic():
         transactions_deleted, _ = PortfolioTransaction.objects.filter(portfolio=portfolio).delete()

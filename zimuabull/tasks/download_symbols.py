@@ -1,8 +1,10 @@
-import requests
 import logging
 import time
-from zimuabull.models import Symbol, Exchange, DaySymbolChoice, CloseBucketChoice
+
+import requests
 from lxml import html
+
+from zimuabull.models import CloseBucketChoice, DaySymbolChoice, Exchange, Symbol
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +57,15 @@ def download_exchange_symbols(url, exchange_name, exchange_code, country):
                 _, created = Symbol.objects.get_or_create(
                     symbol=symbol_text,
                     exchange=exchange,
-                    defaults=dict(
-                        name=name,
-                        last_open=0,
-                        last_close=0,
-                        last_volume=0,
-                        obv_status=DaySymbolChoice.NA,
-                        thirty_close_trend=0,
-                        close_bucket=CloseBucketChoice.NA,
-                    ),
+                    defaults={
+                        "name": name,
+                        "last_open": 0,
+                        "last_close": 0,
+                        "last_volume": 0,
+                        "obv_status": DaySymbolChoice.NA,
+                        "thirty_close_trend": 0,
+                        "close_bucket": CloseBucketChoice.NA,
+                    },
                 )
                 if created:
                     symbols_created += 1
@@ -75,7 +77,7 @@ def download_exchange_symbols(url, exchange_name, exchange_code, country):
         logger.info(f"Created {symbols_created} new symbols for {exchange_name}")
 
     except Exception as e:
-        logger.error(f"Error downloading symbols for {exchange_name}: {e}")
+        logger.exception(f"Error downloading symbols for {exchange_name}: {e}")
 
 
 def download_tse():
@@ -102,15 +104,15 @@ def download_tse():
         symbol = Symbol.objects.get_or_create(
             symbol=symbol,
             exchange=exchange,
-            defaults=dict(
-                name=name,
-                last_open=0,
-                last_close=0,
-                last_volume=0,
-                obv_status=DaySymbolChoice.NA,
-                thirty_close_trend=0,
-                close_bucket=CloseBucketChoice.NA,
-            ),
+            defaults={
+                "name": name,
+                "last_open": 0,
+                "last_close": 0,
+                "last_volume": 0,
+                "obv_status": DaySymbolChoice.NA,
+                "thirty_close_trend": 0,
+                "close_bucket": CloseBucketChoice.NA,
+            },
         )
 
 

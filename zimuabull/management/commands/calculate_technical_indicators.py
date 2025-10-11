@@ -3,35 +3,36 @@ Management command to calculate RSI and MACD for all DaySymbol records.
 Usage: python manage.py calculate_technical_indicators [--symbol AAPL] [--exchange NASDAQ]
 """
 
+
 from django.core.management.base import BaseCommand
-from zimuabull.models import Symbol, DaySymbol
-from datetime import datetime
+
+from zimuabull.models import DaySymbol, Symbol
 
 
 class Command(BaseCommand):
-    help = 'Calculate RSI and MACD technical indicators for all DaySymbol records'
+    help = "Calculate RSI and MACD technical indicators for all DaySymbol records"
 
     def add_arguments(self, parser):
         parser.add_argument(
-            '--symbol',
+            "--symbol",
             type=str,
-            help='Calculate for specific symbol only',
+            help="Calculate for specific symbol only",
         )
         parser.add_argument(
-            '--exchange',
+            "--exchange",
             type=str,
-            help='Calculate for specific exchange only (requires --symbol if used)',
+            help="Calculate for specific exchange only (requires --symbol if used)",
         )
         parser.add_argument(
-            '--force',
-            action='store_true',
-            help='Recalculate even if values already exist',
+            "--force",
+            action="store_true",
+            help="Recalculate even if values already exist",
         )
 
     def handle(self, *args, **options):
-        symbol_filter = options.get('symbol')
-        exchange_filter = options.get('exchange')
-        force = options.get('force', False)
+        symbol_filter = options.get("symbol")
+        exchange_filter = options.get("exchange")
+        force = options.get("force", False)
 
         # Get symbols to process
         symbols = Symbol.objects.all()
@@ -52,13 +53,13 @@ class Command(BaseCommand):
 
             # Get all days for this symbol, ordered by date
             if force:
-                days = DaySymbol.objects.filter(symbol=symbol).order_by('date')
+                days = DaySymbol.objects.filter(symbol=symbol).order_by("date")
             else:
                 # Only process days without RSI/MACD
                 days = DaySymbol.objects.filter(
                     symbol=symbol,
                     rsi__isnull=True
-                ).order_by('date')
+                ).order_by("date")
 
             if not days.exists():
                 continue
@@ -85,7 +86,7 @@ class Command(BaseCommand):
                     updated = True
 
                 if updated:
-                    day.save(update_fields=['rsi', 'macd', 'macd_signal', 'macd_histogram', 'updated_at'])
+                    day.save(update_fields=["rsi", "macd", "macd_signal", "macd_histogram", "updated_at"])
                     records_updated += 1
 
             if symbols_processed % 10 == 0:
