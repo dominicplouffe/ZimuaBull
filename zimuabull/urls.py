@@ -19,6 +19,8 @@ from .views import (
     LivePrice,
     LLMContext,
     MarketBenchmarks,
+    MarketIndexDataViewSet,
+    MarketIndexViewSet,
     NewsBySymbol,
     NewsViewSet,
     PortfolioHoldingViewSet,
@@ -32,6 +34,7 @@ from .views import (
     SymbolsByPrediction,
     SymbolsByStatus,
     SymbolSearch,
+    WeeklyPerformance,
     chat_stream,
 )
 
@@ -46,6 +49,8 @@ router.register(r"portfolios", PortfolioViewSet, basename="portfolios")
 router.register(r"holdings", PortfolioHoldingViewSet, basename="holdings")
 router.register(r"transactions", PortfolioTransactionViewSet, basename="transactions")
 router.register(r"news", NewsViewSet, basename="news")
+router.register(r"market-indices", MarketIndexViewSet, basename="market-indices")
+router.register(r"market-index-data", MarketIndexDataViewSet, basename="market-index-data")
 
 urlpatterns = [
     # News - MUST come before router.urls to avoid conflicts
@@ -74,4 +79,6 @@ urlpatterns = [
     path("api/day-trading-recommendations/", DayTradingRecommendations.as_view(), name="day-trading-recommendations"),
     # Live Price
     path("api/live-price/", LivePrice.as_view(), name="live-price"),
+    # Weekly Performance
+    path("api/weekly-performance/", WeeklyPerformance.as_view(), name="weekly-performance"),
 ]

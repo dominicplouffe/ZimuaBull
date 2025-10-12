@@ -5,6 +5,8 @@ from .models import (
     DaySymbol,
     Exchange,
     Favorite,
+    MarketIndex,
+    MarketIndexData,
     News,
     NewsSentiment,
     Portfolio,
@@ -295,3 +297,29 @@ class NewsListSerializer(serializers.ModelSerializer):
             }
             for sn in symbol_news
         ]
+
+
+class MarketIndexSerializer(serializers.ModelSerializer):
+    """Serializer for MarketIndex model"""
+    class Meta:
+        model = MarketIndex
+        fields = "__all__"
+
+
+class MarketIndexDataSerializer(serializers.ModelSerializer):
+    """Serializer for MarketIndexData with index details"""
+    index = MarketIndexSerializer(read_only=True)
+
+    class Meta:
+        model = MarketIndexData
+        fields = "__all__"
+
+
+class MarketIndexDataListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for MarketIndexData without nested index (for charts)"""
+    index_symbol = serializers.CharField(source='index.symbol', read_only=True)
+    index_name = serializers.CharField(source='index.name', read_only=True)
+
+    class Meta:
+        model = MarketIndexData
+        fields = ['id', 'index_symbol', 'index_name', 'date', 'open', 'high', 'low', 'close', 'volume']
