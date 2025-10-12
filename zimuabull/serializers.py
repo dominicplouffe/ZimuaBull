@@ -5,6 +5,8 @@ from .models import (
     DaySymbol,
     Exchange,
     Favorite,
+    MarketIndex,
+    MarketIndexData,
     News,
     NewsSentiment,
     Portfolio,
@@ -26,6 +28,21 @@ class SymbolSerializer(serializers.ModelSerializer):
     class Meta:
         model = Symbol
         fields = "__all__"
+
+
+class SymbolWithRSISerializer(serializers.ModelSerializer):
+    """Symbol serializer with latest RSI from most recent DaySymbol"""
+    exchange = ExchangeSerializer(read_only=True)
+    latest_rsi = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Symbol
+        fields = "__all__"
+
+    def get_latest_rsi(self, obj):
+        """Get the RSI from the most recent DaySymbol record"""
+        latest_day = DaySymbol.objects.filter(symbol=obj).order_by("-date").first()
+        return latest_day.rsi if latest_day else None
 
 
 class DaySymbolSerializer(serializers.ModelSerializer):
@@ -280,3 +297,29 @@ class NewsListSerializer(serializers.ModelSerializer):
             }
             for sn in symbol_news
         ]
+
+
+class MarketIndexSerializer(serializers.ModelSerializer):
+    """Serializer for MarketIndex model"""
+    class Meta:
+        model = MarketIndex
+        fields = "__all__"
+
+
+class MarketIndexDataSerializer(serializers.ModelSerializer):
+    """Serializer for MarketIndexData with index details"""
+    index = MarketIndexSerializer(read_only=True)
+
+    class Meta:
+        model = MarketIndexData
+        fields = "__all__"
+
+
+class MarketIndexDataListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for MarketIndexData without nested index (for charts)"""
+    index_symbol = serializers.CharField(source='index.symbol', read_only=True)
+    index_name = serializers.CharField(source='index.name', read_only=True)
+
+    class Meta:
+        model = MarketIndexData
+        fields = ['id', 'index_symbol', 'index_name', 'date', 'open', 'high', 'low', 'close', 'volume']

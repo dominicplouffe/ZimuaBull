@@ -47,17 +47,27 @@ from .serializers import (
     DaySymbolSerializer,
     ExchangeSerializer,
     FavoriteSerializer,
+    MarketIndexDataListSerializer,
+    MarketIndexSerializer,
     NewsListSerializer,
     NewsSerializer,
     PortfolioHoldingSerializer,
     PortfolioSerializer,
     PortfolioSummarySerializer,
     SymbolSerializer,
+    SymbolWithRSISerializer,
 )
 
 
 class DaySymbolPagination(PageNumberPagination):
     page_size = 30
+    page_size_query_param = "page_size"
+    max_page_size = 1000
+
+
+class PredictionPagination(PageNumberPagination):
+    """Pagination for symbols-by-prediction endpoint with smaller default page size"""
+    page_size = 10
     page_size_query_param = "page_size"
     max_page_size = 1000
 
@@ -395,25 +405,42 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
 
     **Optional Query Parameters:**
     - `exchange`: Filter by exchange code (e.g., NASDAQ, TSE)
-    - `page_size`: Number of results per page (default: 30, max: 1000)
+    - `obv_status`: Filter by OBV status (BUY, SELL, HOLD, STRONG_BUY, STRONG_SELL, NA)
+    - `sector`: Filter by sector (exact match, case-insensitive)
+    - `industry`: Filter by industry (exact match, case-insensitive)
+    - `symbol`: Search by ticker symbol (substring match, case-insensitive)
+    - `rsi_min`: Minimum RSI value (float, e.g., 0-100)
+    - `rsi_max`: Maximum RSI value (float, e.g., 0-100)
+    - `ordering`: Field to sort by (symbol, last_close, accuracy, thirty_close_trend, latest_rsi)
+    - `direction`: Sort direction (asc or desc, default: asc)
+    - `page_size`: Number of results per page (default: 10, max: 1000)
     - `page`: Page number
 
-    **Returns:** List of symbols with their latest prediction details
+    **Returns:** List of symbols with their latest prediction details and RSI
 
     **Examples:**
     - All positive predictions: `/api/symbols-by-prediction/?prediction=POSITIVE`
-    - NASDAQ positive predictions: `/api/symbols-by-prediction/?prediction=POSITIVE&exchange=NASDAQ`
-    - First 100 results: `/api/symbols-by-prediction/?prediction=NEGATIVE&page_size=100`
+    - NASDAQ positive with RSI > 70: `/api/symbols-by-prediction/?prediction=POSITIVE&exchange=NASDAQ&rsi_min=70`
+    - Sorted by RSI descending: `/api/symbols-by-prediction/?prediction=POSITIVE&ordering=latest_rsi&direction=desc`
+    - Technology sector strong buys: `/api/symbols-by-prediction/?prediction=POSITIVE&sector=Technology&obv_status=STRONG_BUY`
     """
-    serializer_class = SymbolSerializer
-    pagination_class = DaySymbolPagination
-    filter_backends = [filters.OrderingFilter]
-    ordering_fields = ["symbol", "name"]
-    ordering = ["symbol"]
+    serializer_class = SymbolWithRSISerializer
+    pagination_class = PredictionPagination
+    filter_backends = []  # We'll handle filtering manually for better control
 
     def get_queryset(self):
+        from django.db.models import F, OuterRef, Subquery
+
         prediction_type = self.request.query_params.get("prediction", "").upper()
         exchange_code = self.request.query_params.get("exchange")
+        obv_status = self.request.query_params.get("obv_status", "").upper()
+        sector = self.request.query_params.get("sector")
+        industry = self.request.query_params.get("industry")
+        symbol_search = self.request.query_params.get("symbol")
+        rsi_min = self.request.query_params.get("rsi_min")
+        rsi_max = self.request.query_params.get("rsi_max")
+        ordering_field = self.request.query_params.get("ordering", "symbol")
+        direction = self.request.query_params.get("direction", "asc")
 
         if not prediction_type:
             return Symbol.objects.none()
@@ -422,24 +449,73 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
             return Symbol.objects.none()
 
         # Get the latest prediction for each symbol
-        from django.db.models import OuterRef, Subquery
-
         latest_predictions = DayPrediction.objects.filter(
             symbol=OuterRef("pk")
         ).order_by("-date")
 
+        # Get the latest RSI for each symbol (for filtering and sorting)
+        latest_rsi_subquery = DaySymbol.objects.filter(
+            symbol=OuterRef("pk")
+        ).order_by("-date")
+
         # Get symbols where the latest prediction matches the requested type
-        symbol_ids = Symbol.objects.annotate(
+        queryset = Symbol.objects.annotate(
             latest_prediction=Subquery(latest_predictions.values("prediction")[:1]),
-            latest_prediction_date=Subquery(latest_predictions.values("date")[:1])
+            latest_prediction_date=Subquery(latest_predictions.values("date")[:1]),
+            latest_rsi_value=Subquery(latest_rsi_subquery.values("rsi")[:1])
         ).filter(
             latest_prediction=prediction_type
-        ).values_list("id", flat=True)
+        ).select_related("exchange")
 
-        queryset = Symbol.objects.filter(id__in=symbol_ids).select_related("exchange")
-
+        # Apply filters
         if exchange_code:
             queryset = queryset.filter(exchange__code=exchange_code)
+
+        if obv_status:
+            queryset = queryset.filter(obv_status=obv_status)
+
+        if sector:
+            queryset = queryset.filter(sector__iexact=sector)
+
+        if industry:
+            queryset = queryset.filter(industry__iexact=industry)
+
+        if symbol_search:
+            queryset = queryset.filter(symbol__icontains=symbol_search)
+
+        # RSI filters (using the annotated field)
+        if rsi_min is not None:
+            try:
+                rsi_min_float = float(rsi_min)
+                queryset = queryset.filter(latest_rsi_value__gte=rsi_min_float)
+            except ValueError:
+                pass  # Ignore invalid rsi_min
+
+        if rsi_max is not None:
+            try:
+                rsi_max_float = float(rsi_max)
+                queryset = queryset.filter(latest_rsi_value__lte=rsi_max_float)
+            except ValueError:
+                pass  # Ignore invalid rsi_max
+
+        # Apply sorting
+        valid_ordering_fields = {
+            "symbol": "symbol",
+            "last_close": "last_close",
+            "accuracy": "accuracy",
+            "thirty_close_trend": "thirty_close_trend",
+            "latest_rsi": "latest_rsi_value"  # Use the annotated field
+        }
+
+        if ordering_field in valid_ordering_fields:
+            db_field = valid_ordering_fields[ordering_field]
+            if direction == "desc":
+                queryset = queryset.order_by(F(db_field).desc(nulls_last=True))
+            else:
+                queryset = queryset.order_by(F(db_field).asc(nulls_last=True))
+        else:
+            # Default ordering
+            queryset = queryset.order_by("symbol")
 
         return queryset
 
@@ -2353,3 +2429,239 @@ class AnalyzeNewsSentiment(APIView):
                 "task_id": str(task.id),
                 "pending_count": pending_count
             })
+
+
+class MarketIndexViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    List all market indices being tracked.
+
+    **Read-only endpoint** - only GET requests are allowed.
+
+    **Returns:** List of market indices (S&P 500, NASDAQ, etc.)
+
+    **Example:**
+    - Get all indices: `/api/market-indices/`
+    """
+    queryset = MarketIndex.objects.all()
+    serializer_class = MarketIndexSerializer
+    pagination_class = None  # No pagination for index list
+
+
+class MarketIndexDataViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Historical market index data for charting.
+
+    **Read-only endpoint** - only GET requests are allowed.
+
+    **Optional Query Parameters:**
+    - `symbol`: Filter by index symbol (e.g., ^GSPC for S&P 500)
+    - `start_date`: Start date for data range (YYYY-MM-DD)
+    - `end_date`: End date for data range (YYYY-MM-DD)
+    - `days`: Number of days of history (alternative to date range, e.g., 30, 90, 365)
+
+    **Returns:** List of daily OHLCV data for market indices
+
+    **Examples:**
+    - Last 30 days of S&P 500: `/api/market-index-data/?symbol=^GSPC&days=30`
+    - Date range for NASDAQ: `/api/market-index-data/?symbol=^IXIC&start_date=2024-01-01&end_date=2024-12-31`
+    - All indices, last 90 days: `/api/market-index-data/?days=90`
+    """
+    serializer_class = MarketIndexDataListSerializer
+    pagination_class = None  # No pagination for chart data
+
+    def get_queryset(self):
+        from datetime import datetime, timedelta
+
+        queryset = MarketIndexData.objects.all().select_related('index')
+
+        # Filter by symbol
+        symbol = self.request.query_params.get('symbol')
+        if symbol:
+            queryset = queryset.filter(index__symbol=symbol)
+
+        # Date filtering
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        days = self.request.query_params.get('days')
+
+        if days:
+            try:
+                days_int = int(days)
+                start_date_calc = datetime.now().date() - timedelta(days=days_int)
+                queryset = queryset.filter(date__gte=start_date_calc)
+            except ValueError:
+                pass  # Ignore invalid days parameter
+
+        if start_date:
+            try:
+                start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+                queryset = queryset.filter(date__gte=start_date_obj)
+            except ValueError:
+                pass  # Ignore invalid start_date
+
+        if end_date:
+            try:
+                end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+                queryset = queryset.filter(date__lte=end_date_obj)
+            except ValueError:
+                pass  # Ignore invalid end_date
+
+        return queryset.order_by('index__symbol', 'date')
+
+
+class WeeklyPerformance(APIView):
+    """
+    Get weekly performance analysis with technical indicators.
+
+    Returns week-over-week price changes along with current technical indicators
+    (RSI, OBV status, 30-day trend) and RSI changes.
+
+    **Optional Query Parameters:**
+    - `symbol`: Filter by specific ticker symbol
+    - `exchange`: Filter by exchange code (NASDAQ, TSE, NYSE)
+    - `min_change`: Minimum weekly % change (e.g., 5 for +5%, -10 for -10%)
+    - `max_change`: Maximum weekly % change
+    - `prediction`: Filter by latest prediction (POSITIVE, NEGATIVE, NEUTRAL)
+    - `obv_status`: Filter by OBV status (BUY, SELL, HOLD, etc.)
+    - `ordering`: Sort by (weekly_change, rsi_change, symbol) - default: weekly_change
+    - `direction`: Sort direction (asc or desc) - default: desc
+    - `page_size`: Results per page (default: 30)
+
+    **Returns:** List of symbols with weekly performance and technical indicators
+
+    **Examples:**
+    - Top gainers this week: `/api/weekly-performance/?ordering=weekly_change&direction=desc`
+    - Tech stocks with positive predictions: `/api/weekly-performance/?exchange=NASDAQ&prediction=POSITIVE`
+    - Stocks up >5% with RSI improvement: `/api/weekly-performance/?min_change=5`
+    """
+    def get(self, request):
+        from datetime import datetime, timedelta
+        from django.db.models import F, OuterRef, Subquery
+
+        # Get query parameters
+        symbol_filter = request.query_params.get('symbol')
+        exchange_filter = request.query_params.get('exchange')
+        min_change = request.query_params.get('min_change')
+        max_change = request.query_params.get('max_change')
+        prediction_filter = request.query_params.get('prediction', '').upper()
+        obv_filter = request.query_params.get('obv_status', '').upper()
+        ordering = request.query_params.get('ordering', 'weekly_change')
+        direction = request.query_params.get('direction', 'desc')
+        page_size = int(request.query_params.get('page_size', 30))
+
+        # Calculate dates
+        today = datetime.now().date()
+        one_week_ago = today - timedelta(days=7)
+
+        # Get symbols with their latest data
+        latest_data_subquery = DaySymbol.objects.filter(
+            symbol=OuterRef('pk')
+        ).order_by('-date')
+
+        # Get data from 1 week ago
+        week_ago_data_subquery = DaySymbol.objects.filter(
+            symbol=OuterRef('pk'),
+            date__lte=one_week_ago
+        ).order_by('-date')
+
+        # Get latest prediction
+        latest_prediction_subquery = DayPrediction.objects.filter(
+            symbol=OuterRef('pk')
+        ).order_by('-date')
+
+        # Build queryset with annotations
+        symbols = Symbol.objects.annotate(
+            latest_close=Subquery(latest_data_subquery.values('close')[:1]),
+            latest_date=Subquery(latest_data_subquery.values('date')[:1]),
+            latest_rsi_value=Subquery(latest_data_subquery.values('rsi')[:1]),
+            week_ago_close=Subquery(week_ago_data_subquery.values('close')[:1]),
+            week_ago_date=Subquery(week_ago_data_subquery.values('date')[:1]),
+            week_ago_rsi=Subquery(week_ago_data_subquery.values('rsi')[:1]),
+            latest_prediction=Subquery(latest_prediction_subquery.values('prediction')[:1])
+        ).filter(
+            latest_close__isnull=False,
+            week_ago_close__isnull=False
+        ).select_related('exchange')
+
+        # Apply filters
+        if symbol_filter:
+            symbols = symbols.filter(symbol__icontains=symbol_filter)
+
+        if exchange_filter:
+            symbols = symbols.filter(exchange__code=exchange_filter)
+
+        if obv_filter:
+            symbols = symbols.filter(obv_status=obv_filter)
+
+        if prediction_filter and prediction_filter in ['POSITIVE', 'NEGATIVE', 'NEUTRAL']:
+            symbols = symbols.filter(latest_prediction=prediction_filter)
+
+        # Calculate weekly changes in Python (can't do division in DB annotations easily)
+        results = []
+        for symbol in symbols:
+            if symbol.week_ago_close and symbol.week_ago_close > 0:
+                weekly_change = ((symbol.latest_close - symbol.week_ago_close) / symbol.week_ago_close) * 100
+
+                # Calculate RSI change
+                rsi_change = None
+                if symbol.latest_rsi_value is not None and symbol.week_ago_rsi is not None:
+                    rsi_change = symbol.latest_rsi_value - symbol.week_ago_rsi
+
+                # Apply min/max change filters
+                if min_change is not None:
+                    try:
+                        if weekly_change < float(min_change):
+                            continue
+                    except ValueError:
+                        pass
+
+                if max_change is not None:
+                    try:
+                        if weekly_change > float(max_change):
+                            continue
+                    except ValueError:
+                        pass
+
+                results.append({
+                    'symbol': symbol.symbol,
+                    'name': symbol.name,
+                    'exchange': symbol.exchange.code,
+                    'sector': symbol.sector,
+                    'industry': symbol.industry,
+                    'latest_close': round(symbol.latest_close, 2),
+                    'latest_date': symbol.latest_date,
+                    'week_ago_close': round(symbol.week_ago_close, 2),
+                    'week_ago_date': symbol.week_ago_date,
+                    'weekly_change': round(weekly_change, 2),
+                    'latest_rsi': round(symbol.latest_rsi_value, 2) if symbol.latest_rsi_value else None,
+                    'week_ago_rsi': round(symbol.week_ago_rsi, 2) if symbol.week_ago_rsi else None,
+                    'rsi_change': round(rsi_change, 2) if rsi_change is not None else None,
+                    'thirty_close_trend': round(symbol.thirty_close_trend, 2),
+                    'obv_status': symbol.obv_status,
+                    'latest_prediction': symbol.latest_prediction,
+                    'accuracy': round(symbol.accuracy, 2) if symbol.accuracy else None
+                })
+
+        # Sort results
+        reverse = (direction == 'desc')
+        if ordering == 'weekly_change':
+            results.sort(key=lambda x: x['weekly_change'], reverse=reverse)
+        elif ordering == 'rsi_change':
+            results.sort(key=lambda x: x['rsi_change'] if x['rsi_change'] is not None else -999, reverse=reverse)
+        elif ordering == 'symbol':
+            results.sort(key=lambda x: x['symbol'], reverse=reverse)
+        else:
+            results.sort(key=lambda x: x['weekly_change'], reverse=True)
+
+        # Paginate
+        page = int(request.query_params.get('page', 1))
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated_results = results[start:end]
+
+        return Response({
+            'count': len(results),
+            'page': page,
+            'page_size': page_size,
+            'results': paginated_results
+        })

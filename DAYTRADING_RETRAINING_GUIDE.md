@@ -57,16 +57,28 @@ Total snapshots created: 25,000+
 
 ---
 
-### Step 2: Update Labels (if needed)
+### Step 2: Update Labels (After Market Close)
 
 After market closes, update actual returns for feature snapshots:
 
 ```bash
+# Update labels for all symbols on a specific date
 .venv/bin/python manage.py update_daytrading_labels \
     --date 2024-10-10
+
+# Or update labels for a specific symbol
+.venv/bin/python manage.py update_daytrading_labels \
+    --date 2024-10-10 \
+    --symbol AAPL \
+    --exchange NASDAQ
 ```
 
-**Note:** This command may need to be created if it doesn't exist. Alternative: labels are auto-computed when features are generated.
+**What this does:**
+- Populates label fields (`intraday_return`, `max_favorable_excursion`, `max_adverse_excursion`) for feature snapshots
+- Uses finalized `DaySymbol` data to compute actual returns
+- Sets `label_ready=True` on updated snapshots
+
+**Note:** This step is automatically run by Celery Beat at 9:30 PM on weekdays via the `complete_daily_feature_labels` task.
 
 ---
 
@@ -503,3 +515,113 @@ If you encounter issues:
 **Last Updated:** 2024-10-11
 **Model Version:** v1 (HistGradientBoostingRegressor)
 **Commission Structure:** Interactive Brokers Tiered Pricing
+
+---
+
+## 🐛 Common Issues
+
+### Issue: KeyError: 'intraday_return' When Training
+
+**Error Message:**
+```
+KeyError: 'intraday_return'
+```
+
+**Cause:** No feature snapshots with labels exist for your training date range, or there's a feature version mismatch.
+
+**Diagnosis:**
+```bash
+.venv/bin/python << 'PYEOF'
+import os, django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+django.setup()
+
+from zimuabull.models import FeatureSnapshot
+from zimuabull.daytrading.constants import FEATURE_VERSION
+from datetime import datetime
+
+start_date = datetime.strptime("2024-04-01", "%Y-%m-%d").date()
+end_date = datetime.strptime("2024-10-01", "%Y-%m-%d").date()
+
+print(f"Current FEATURE_VERSION: {FEATURE_VERSION}\n")
+
+# Check all versions
+all_snapshots = FeatureSnapshot.objects.filter(
+    trade_date__gte=start_date,
+    trade_date__lte=end_date
+)
+
+for version in all_snapshots.values_list('feature_version', flat=True).distinct():
+    total = all_snapshots.filter(feature_version=version).count()
+    labeled = all_snapshots.filter(feature_version=version, label_ready=True).count()
+    print(f"Version '{version}':")
+    print(f"  Total: {total}")
+    print(f"  Labeled: {labeled}\n")
+
+# Check current version
+current_labeled = FeatureSnapshot.objects.filter(
+    trade_date__gte=start_date,
+    trade_date__lte=end_date,
+    feature_version=FEATURE_VERSION,
+    label_ready=True
+).count()
+
+print(f"✓ {FEATURE_VERSION} snapshots with labels: {current_labeled}")
+print(f"✓ Minimum needed for training: 500")
+
+if current_labeled < 500:
+    print(f"\n❌ INSUFFICIENT DATA - Need at least 500 labeled snapshots")
+PYEOF
+```
+
+**Solution:**
+
+If no current version snapshots exist:
+```bash
+# 1. Generate features for your date range
+.venv/bin/python manage.py generate_daytrading_features \
+    --start-date 2024-04-01 \
+    --end-date 2024-10-01 \
+    --overwrite
+
+# 2. Update labels for each trading day
+# (Or wait for Celery Beat to run nightly at 9:30 PM)
+for date in $(seq -f "2024-04-%02g" 1 30); do
+    .venv/bin/python manage.py update_daytrading_labels --date $date
+done
+```
+
+**Quick Fix for Testing:**
+Use a more recent date range that has labeled data:
+```bash
+.venv/bin/python manage.py train_daytrading_model \
+    --start-date 2025-09-01 \
+    --end-date 2025-10-01 \
+    --min-rows 100
+```
+
+---
+
+### Issue: Model Training Completes But R² is Negative
+
+**Cause:** Not enough training data, or features aren't predictive.
+
+**Solution:**
+1. Check you have at least 500 labeled snapshots
+2. Ensure date range covers multiple months
+3. Verify market data quality (no missing OHLCV data)
+
+---
+
+### Issue: Backtest Shows 0% Returns
+
+**Cause:** Model file doesn't exist or predictions are all the same.
+
+**Check:**
+```bash
+ls -lh artifacts/daytrading/intraday_model.joblib
+cat artifacts/daytrading/intraday_model_meta.json
+```
+
+**Solution:** Retrain the model following Step 3.
+
