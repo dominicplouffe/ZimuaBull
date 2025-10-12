@@ -53,6 +53,7 @@ from .serializers import (
     PortfolioSerializer,
     PortfolioSummarySerializer,
     SymbolSerializer,
+    SymbolWithRSISerializer,
 )
 
 
@@ -398,14 +399,14 @@ class SymbolsByPrediction(viewsets.ReadOnlyModelViewSet):
     - `page_size`: Number of results per page (default: 30, max: 1000)
     - `page`: Page number
 
-    **Returns:** List of symbols with their latest prediction details
+    **Returns:** List of symbols with their latest prediction details and RSI
 
     **Examples:**
     - All positive predictions: `/api/symbols-by-prediction/?prediction=POSITIVE`
     - NASDAQ positive predictions: `/api/symbols-by-prediction/?prediction=POSITIVE&exchange=NASDAQ`
     - First 100 results: `/api/symbols-by-prediction/?prediction=NEGATIVE&page_size=100`
     """
-    serializer_class = SymbolSerializer
+    serializer_class = SymbolWithRSISerializer
     pagination_class = DaySymbolPagination
     filter_backends = [filters.OrderingFilter]
     ordering_fields = ["symbol", "name"]

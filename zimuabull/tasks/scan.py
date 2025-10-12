@@ -36,18 +36,21 @@ def scan():
 
         from zimuabull.models import DaySymbol, Symbol
 
-        # Get symbols that were updated in the last 2 days
+        # Get all symbols that have DaySymbol records in the last 2 days (by date, not updated_at)
+        # This ensures we calculate RSI/MACD for all symbols with recent trading data
         recent_date = datetime.now().date() - timedelta(days=2)
+
+        # Find all symbols with DaySymbol records on or after recent_date
         recent_symbols = DaySymbol.objects.filter(
-            updated_at__gte=recent_date
+            date__gte=recent_date
         ).values_list("symbol_id", flat=True).distinct()
 
         symbols = Symbol.objects.filter(id__in=recent_symbols)
-        logger.info(f"Found {symbols.count()} symbols with recent updates")
+        logger.info(f"Found {symbols.count()} symbols with recent trading data (date >= {recent_date})")
 
         indicators_updated = 0
         for symbol in symbols:
-            # Get recent days without RSI/MACD
+            # Get recent days without RSI/MACD (based on date, not updated_at)
             recent_days = DaySymbol.objects.filter(
                 symbol=symbol,
                 date__gte=recent_date,

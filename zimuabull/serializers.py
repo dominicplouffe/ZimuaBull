@@ -28,6 +28,21 @@ class SymbolSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class SymbolWithRSISerializer(serializers.ModelSerializer):
+    """Symbol serializer with latest RSI from most recent DaySymbol"""
+    exchange = ExchangeSerializer(read_only=True)
+    latest_rsi = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Symbol
+        fields = "__all__"
+
+    def get_latest_rsi(self, obj):
+        """Get the RSI from the most recent DaySymbol record"""
+        latest_day = DaySymbol.objects.filter(symbol=obj).order_by("-date").first()
+        return latest_day.rsi if latest_day else None
+
+
 class DaySymbolSerializer(serializers.ModelSerializer):
     symbol = SymbolSerializer()
 
