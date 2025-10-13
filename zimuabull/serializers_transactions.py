@@ -154,7 +154,10 @@ class PortfolioWithCashSerializer(serializers.ModelSerializer):
         fields = [
             "id", "name", "description", "exchange",
             "initial_balance", "cash_balance", "holdings_value", "total_value", "holdings_count",
-            "is_active", "created_at", "updated_at"
+            "is_active", "created_at", "updated_at",
+            # Day trading settings
+            "is_automated", "dt_max_position_percent", "dt_per_trade_risk_fraction",
+            "dt_max_recommendations", "dt_allow_fractional_shares"
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
