@@ -1,15 +1,13 @@
 from datetime import timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from django.db import models
 from django.utils import timezone
 
 from celery import shared_task
 
 from zimuabull.daytrading.backtest import run_backtest
-from zimuabull.daytrading.constants import (
-    AUTONOMOUS_USER_ID,
-    MAX_RECOMMENDATIONS,
-)
 from zimuabull.daytrading.dataset import load_dataset
 from zimuabull.daytrading.feature_builder import (
     build_features_for_date,
@@ -20,8 +18,9 @@ from zimuabull.daytrading.trading_engine import (
     close_all_positions,
     execute_recommendations,
     generate_recommendations,
+    get_automated_portfolios,
+    get_manual_portfolios,
     get_open_day_trade_positions,
-    get_portfolios_for_user,
     monitor_positions,
 )
 from zimuabull.models import (
@@ -63,6 +62,7 @@ def _within_entry_window() -> bool:
 
 @shared_task(bind=True, ignore_result=False, queue="pidashtasks")
 def run_morning_trading_session(self):
+    """Execute morning trading session for all automated portfolios"""
     if not _is_trading_day():
         return {"status": "skipped", "reason": "market_closed"}
 
@@ -72,9 +72,11 @@ def run_morning_trading_session(self):
     trade_date = timezone.now().astimezone(NY_TZ).date()
     results = []
 
-    for portfolio in get_portfolios_for_user(AUTONOMOUS_USER_ID):
+    # Get all automated portfolios (across all users)
+    for portfolio in get_automated_portfolios():
         portfolio_result = {
             "portfolio": portfolio.id,
+            "user": portfolio.user.username,
             "exchange": portfolio.exchange.code,
         }
 
@@ -89,11 +91,10 @@ def run_morning_trading_session(self):
             results.append(portfolio_result)
             continue
 
+        # Use portfolio-specific settings
         recommendations = generate_recommendations(
             trade_date=trade_date,
-            max_positions=MAX_RECOMMENDATIONS,
-            bankroll=bankroll,
-            exchange_filter=portfolio.exchange.code,
+            portfolio=portfolio,
         )
 
         positions = execute_recommendations(recommendations, portfolio, trade_date)
@@ -117,25 +118,28 @@ def run_morning_trading_session(self):
 
 @shared_task(bind=True, ignore_result=True, queue="pidashtasks")
 def monitor_intraday_positions(self):
+    """Monitor open positions for all automated portfolios during trading hours"""
     if not _market_window_open():
         return
-    for portfolio in get_portfolios_for_user(AUTONOMOUS_USER_ID):
+    for portfolio in get_automated_portfolios():
         monitor_positions(portfolio)
 
 
 @shared_task(bind=True, ignore_result=False, queue="pidashtasks")
 def close_intraday_positions(self):
+    """Close all open day trading positions at end of trading day for automated portfolios"""
     if not _is_trading_day():
         return {"status": "skipped", "reason": "market_closed"}
 
     results = []
-    for portfolio in get_portfolios_for_user(AUTONOMOUS_USER_ID):
+    for portfolio in get_automated_portfolios():
         open_positions = get_open_day_trade_positions(portfolio)
         close_all_positions(portfolio)
         portfolio.refresh_from_db()
         results.append(
             {
                 "portfolio": portfolio.id,
+                "user": portfolio.user.username,
                 "closed_positions": len(open_positions),
                 "cash_balance": float(portfolio.cash_balance),
             }
@@ -277,6 +281,72 @@ def daily_trading_health_check(self):
         "orphan_recommendations": orphan_recommendations.count(),
         "stale_snapshots": stale_snapshots,
         "warnings": warnings,
+    }
+
+
+@shared_task(bind=True, ignore_result=False, queue="pidashtasks")
+def create_daily_portfolio_snapshots(self):
+    """Create daily portfolio snapshots for all active portfolios (manual and automated)"""
+    from zimuabull.models import Portfolio, PortfolioSnapshot
+
+    if not _is_trading_day():
+        return {"status": "skipped", "reason": "market_closed"}
+
+    snapshot_date = timezone.now().astimezone(NY_TZ).date()
+    results = []
+
+    # Get all active portfolios (both manual and automated)
+    all_portfolios = Portfolio.objects.filter(is_active=True).select_related("exchange", "user")
+
+    for portfolio in all_portfolios:
+        # Check if snapshot already exists for today
+        if PortfolioSnapshot.objects.filter(portfolio=portfolio, date=snapshot_date).exists():
+            results.append({
+                "portfolio": portfolio.id,
+                "user": portfolio.user.username,
+                "status": "skipped",
+                "reason": "snapshot_exists"
+            })
+            continue
+
+        # Calculate portfolio metrics
+        total_value = Decimal(str(portfolio.current_value()))
+
+        # Calculate total deposits/withdrawals from transactions
+        deposits = portfolio.transactions.filter(transaction_type="DEPOSIT").aggregate(
+            total=models.Sum(models.F("quantity") * models.F("price"))
+        )["total"] or Decimal("0")
+
+        withdrawals = portfolio.transactions.filter(transaction_type="WITHDRAWAL").aggregate(
+            total=models.Sum(models.F("quantity") * models.F("price"))
+        )["total"] or Decimal("0")
+
+        initial_capital = deposits - withdrawals
+        gain_loss = total_value - initial_capital if initial_capital > 0 else Decimal("0")
+        gain_loss_percent = (gain_loss / initial_capital * 100) if initial_capital > 0 else Decimal("0")
+
+        # Create snapshot
+        PortfolioSnapshot.objects.create(
+            portfolio=portfolio,
+            date=snapshot_date,
+            total_value=total_value,
+            gain_loss=gain_loss,
+            gain_loss_percent=gain_loss_percent,
+            total_invested=initial_capital,
+        )
+
+        results.append({
+            "portfolio": portfolio.id,
+            "user": portfolio.user.username,
+            "is_automated": portfolio.is_automated,
+            "status": "created",
+            "total_value": float(total_value),
+            "gain_loss": float(gain_loss),
+        })
+
+    return {
+        "snapshot_date": str(snapshot_date),
+        "portfolios": results,
     }
 
 

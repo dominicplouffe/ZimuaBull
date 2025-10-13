@@ -152,7 +152,10 @@ class PortfolioSerializer(serializers.ModelSerializer):
             "id", "name", "description", "user", "exchange",
             "is_active", "created_at", "updated_at",
             "cash_balance", "holdings", "holdings_count", "active_holdings_count",
-            "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent"
+            "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent",
+            # Day trading settings
+            "is_automated", "dt_max_position_percent", "dt_per_trade_risk_fraction",
+            "dt_max_recommendations", "dt_allow_fractional_shares"
         ]
         read_only_fields = ["user", "created_at", "updated_at"]
 
@@ -194,7 +197,10 @@ class PortfolioSummarySerializer(serializers.ModelSerializer):
             "id", "name", "description", "exchange",
             "is_active", "created_at", "updated_at",
             "cash_balance", "holdings_count", "active_holdings_count",
-            "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent"
+            "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent",
+            # Day trading settings
+            "is_automated", "dt_max_position_percent", "dt_per_trade_risk_fraction",
+            "dt_max_recommendations", "dt_allow_fractional_shares"
         ]
 
     def get_cash_balance(self, obj):
