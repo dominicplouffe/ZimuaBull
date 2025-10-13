@@ -27,13 +27,6 @@ from zimuabull.models import (
     TransactionType,
 )
 
-from .constants import (
-    DEFAULT_BANKROLL,
-    MAX_POSITION_PERCENT,
-    MAX_RECOMMENDATIONS,
-    PER_TRADE_RISK_FRACTION,
-)
-
 NY_TZ = ZoneInfo("America/New_York")
 
 
@@ -105,6 +98,7 @@ class Recommendation:
 
 
 def get_portfolios_for_user(user_id: int) -> list[Portfolio]:
+    """Get all active portfolios for a user (for backward compatibility)"""
     portfolios = list(
         Portfolio.objects.filter(user_id=user_id, is_active=True)
         .order_by("created_at")
@@ -117,6 +111,24 @@ def get_portfolios_for_user(user_id: int) -> list[Portfolio]:
 
 def get_portfolio_for_user(user_id: int) -> Portfolio:
     return get_portfolios_for_user(user_id)[0]
+
+
+def get_automated_portfolios() -> list[Portfolio]:
+    """Get all active portfolios with automated trading enabled"""
+    return list(
+        Portfolio.objects.filter(is_active=True, is_automated=True)
+        .select_related("exchange", "user")
+        .order_by("created_at")
+    )
+
+
+def get_manual_portfolios() -> list[Portfolio]:
+    """Get all active portfolios with manual tracking (not automated)"""
+    return list(
+        Portfolio.objects.filter(is_active=True, is_automated=False)
+        .select_related("exchange", "user")
+        .order_by("created_at")
+    )
 
 
 def _yf_symbol(symbol: Symbol) -> str:
@@ -229,10 +241,33 @@ def _prepare_dataset(trade_date: date, symbols: Iterable[Symbol]) -> pd.DataFram
 
 def generate_recommendations(
     trade_date: date,
-    max_positions: int = MAX_RECOMMENDATIONS,
-    bankroll: float = DEFAULT_BANKROLL,
+    portfolio: Portfolio,
+    max_positions: int | None = None,
+    bankroll: float | None = None,
     exchange_filter: str | None = None,
 ) -> list[Recommendation]:
+    """
+    Generate trading recommendations for a portfolio.
+
+    Args:
+        trade_date: The date to generate recommendations for
+        portfolio: Portfolio object containing trading settings
+        max_positions: Override for max positions (uses portfolio.dt_max_recommendations if None)
+        bankroll: Override for bankroll (uses portfolio.cash_balance if None)
+        exchange_filter: Optional exchange filter (uses portfolio.exchange.code if None)
+    """
+    # Use portfolio settings if not overridden
+    if max_positions is None:
+        max_positions = portfolio.dt_max_recommendations
+    if bankroll is None:
+        bankroll = float(portfolio.cash_balance)
+    if exchange_filter is None:
+        exchange_filter = portfolio.exchange.code
+
+    # Extract portfolio-specific settings
+    max_position_percent = float(portfolio.dt_max_position_percent)
+    per_trade_risk_fraction = float(portfolio.dt_per_trade_risk_fraction)
+    allow_fractional_shares = portfolio.dt_allow_fractional_shares
     symbols = Symbol.objects.all()
     if exchange_filter:
         symbols = symbols.filter(exchange__code=exchange_filter)
@@ -267,14 +302,22 @@ def generate_recommendations(
         risk_per_share = entry_price - stop_price
         if risk_per_share <= 0:
             continue
-        max_risk_capital = bankroll * PER_TRADE_RISK_FRACTION
+        max_risk_capital = bankroll * per_trade_risk_fraction
         shares_by_risk = max_risk_capital / risk_per_share
-        max_allocation = bankroll * MAX_POSITION_PERCENT
+        max_allocation = bankroll * max_position_percent
         allocation = min(max_allocation, bankroll / max_positions)
         shares = allocation / entry_price
         shares = min(shares, shares_by_risk)
+
+        # Round to whole shares if fractional shares are not allowed
+        if not allow_fractional_shares:
+            shares = int(shares)  # Floor to whole number
+
         if shares < 1:
             continue
+
+        # Format shares precision based on fractional flag
+        shares_decimal = Decimal(str(shares)) if allow_fractional_shares else Decimal(str(int(shares)))
 
         recommendation = Recommendation(
             symbol=symbol_obj,
@@ -284,7 +327,7 @@ def generate_recommendations(
             target_price=target_price,
             stop_price=stop_price,
             allocation=Decimal(str(allocation)),
-            shares=Decimal(str(round(shares, 4))),
+            shares=shares_decimal,
             atr=float(atr_value),
             features=row.to_dict(),
         )
@@ -323,7 +366,8 @@ def _create_transaction(
     transaction_date: date,
     notes: str,
 ):
-    PortfolioTransaction.objects.create(
+    # Use save() instead of create() to trigger holding updates
+    txn = PortfolioTransaction(
         portfolio=portfolio,
         symbol=symbol,
         transaction_type=TransactionType.BUY,
@@ -332,6 +376,7 @@ def _create_transaction(
         transaction_date=transaction_date,
         notes=notes,
     )
+    txn.save()
 
 
 def _create_day_trade_position(
@@ -390,7 +435,12 @@ def execute_recommendations(
             slippage_cost = base_price * Decimal(str(SLIPPAGE_BPS / 10000.0))
             entry_price = base_price + slippage_cost
 
-            shares = rec.shares.quantize(Decimal("0.0001"))
+            # Quantize shares based on portfolio's fractional flag
+            if portfolio.dt_allow_fractional_shares:
+                shares = rec.shares.quantize(Decimal("0.0001"))  # 4 decimal places for fractional
+            else:
+                shares = Decimal(str(int(rec.shares)))  # Whole shares only
+
             total_cost = (entry_price * shares) + commission_cost
 
             # Check if enough cash (including transaction costs)
@@ -441,7 +491,8 @@ def get_open_day_trade_positions(portfolio: Portfolio, trade_date: date | None =
 def close_position(position: DayTradePosition, exit_price: Decimal, reason: str):
     portfolio = position.portfolio
     with transaction.atomic():
-        PortfolioTransaction.objects.create(
+        # Use save() instead of create() to trigger holding updates
+        txn = PortfolioTransaction(
             portfolio=portfolio,
             symbol=position.symbol,
             transaction_type=TransactionType.SELL,
@@ -450,6 +501,7 @@ def close_position(position: DayTradePosition, exit_price: Decimal, reason: str)
             transaction_date=position.trade_date,
             notes=f"Autonomous intraday exit: {reason}",
         )
+        txn.save()
 
         position.status = DayTradePositionStatus.CLOSED
         position.exit_price = exit_price

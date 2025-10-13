@@ -296,6 +296,35 @@ class Portfolio(models.Model):
     exchange = models.ForeignKey("Exchange", on_delete=models.PROTECT)  # All holdings must be from this exchange
     cash_balance = models.DecimalField(max_digits=15, decimal_places=2, default=0)  # Available cash
     is_active = models.BooleanField(default=True)
+
+    # Day Trading Configuration
+    is_automated = models.BooleanField(
+        default=False,
+        help_text="If True, portfolio will execute autonomous day trading algorithm. If False, manual tracking only."
+    )
+
+    # Day Trading Settings (only used when is_automated=True)
+    dt_max_position_percent = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        default=0.25,
+        help_text="Maximum percentage of portfolio to allocate per position (e.g., 0.25 = 25%)"
+    )
+    dt_per_trade_risk_fraction = models.DecimalField(
+        max_digits=4,
+        decimal_places=3,
+        default=0.020,
+        help_text="Risk fraction per trade for position sizing (e.g., 0.02 = 2% portfolio risk)"
+    )
+    dt_max_recommendations = models.IntegerField(
+        default=50,
+        help_text="Maximum number of positions to open in morning trading session"
+    )
+    dt_allow_fractional_shares = models.BooleanField(
+        default=False,
+        help_text="If True, allows fractional share purchases. If False, rounds to whole shares only."
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
