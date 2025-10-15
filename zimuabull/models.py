@@ -512,13 +512,53 @@ class PortfolioTransaction(models.Model):
             }
         )
 
-        if not created:
+        if created:
+            # Log the creation of a new holding
+            PortfolioHoldingLog.objects.create(
+                portfolio=self.portfolio,
+                symbol=self.symbol,
+                transaction=self,
+                operation="CREATE",
+                quantity_before=None,
+                average_cost_before=None,
+                quantity_after=holding.quantity,
+                average_cost_after=holding.average_cost,
+                transaction_type=self.transaction_type,
+                transaction_quantity=self.quantity,
+                transaction_price=self.price,
+                transaction_date=self.transaction_date,
+                holding_status=holding.status,
+                notes=f"Created new holding with {self.quantity} shares at ${self.price}"
+            )
+        else:
+            # Capture state before update
+            qty_before = holding.quantity
+            avg_cost_before = holding.average_cost
+
             # Update average cost and quantity
             total_cost = (holding.quantity * holding.average_cost) + (self.quantity * self.price)
             total_quantity = holding.quantity + self.quantity
             holding.average_cost = total_cost / total_quantity
             holding.quantity = total_quantity
             holding.save(update_fields=["quantity", "average_cost", "updated_at"])
+
+            # Log the update
+            PortfolioHoldingLog.objects.create(
+                portfolio=self.portfolio,
+                symbol=self.symbol,
+                transaction=self,
+                operation="UPDATE",
+                quantity_before=qty_before,
+                average_cost_before=avg_cost_before,
+                quantity_after=holding.quantity,
+                average_cost_after=holding.average_cost,
+                transaction_type=self.transaction_type,
+                transaction_quantity=self.quantity,
+                transaction_price=self.price,
+                transaction_date=self.transaction_date,
+                holding_status=holding.status,
+                notes=f"Updated holding: {qty_before} + {self.quantity} = {holding.quantity} shares"
+            )
 
     def _update_holding_for_sell(self):
         """Update holding after a sell transaction"""
@@ -529,18 +569,73 @@ class PortfolioTransaction(models.Model):
                 status="ACTIVE"
             )
 
+            # Capture state before update
+            qty_before = holding.quantity
+            avg_cost_before = holding.average_cost
+
             holding.quantity -= self.quantity
 
             if holding.quantity <= 0:
                 # Fully sold - remove holding
                 holding.delete()
+
+                # Log the deletion
+                PortfolioHoldingLog.objects.create(
+                    portfolio=self.portfolio,
+                    symbol=self.symbol,
+                    transaction=self,
+                    operation="DELETE",
+                    quantity_before=qty_before,
+                    average_cost_before=avg_cost_before,
+                    quantity_after=0,
+                    average_cost_after=None,
+                    transaction_type=self.transaction_type,
+                    transaction_quantity=self.quantity,
+                    transaction_price=self.price,
+                    transaction_date=self.transaction_date,
+                    holding_status="DELETED",
+                    notes=f"Fully sold position: {qty_before} - {self.quantity} = {holding.quantity} (DELETED)"
+                )
             else:
                 # Partial sell - update quantity
                 holding.save(update_fields=["quantity", "updated_at"])
 
+                # Log the partial sell
+                PortfolioHoldingLog.objects.create(
+                    portfolio=self.portfolio,
+                    symbol=self.symbol,
+                    transaction=self,
+                    operation="UPDATE",
+                    quantity_before=qty_before,
+                    average_cost_before=avg_cost_before,
+                    quantity_after=holding.quantity,
+                    average_cost_after=holding.average_cost,
+                    transaction_type=self.transaction_type,
+                    transaction_quantity=self.quantity,
+                    transaction_price=self.price,
+                    transaction_date=self.transaction_date,
+                    holding_status=holding.status,
+                    notes=f"Partial sell: {qty_before} - {self.quantity} = {holding.quantity} shares remaining"
+                )
+
         except PortfolioHolding.DoesNotExist:
-            # Can't sell what you don't have - this should be validated before save
-            pass
+            # Can't sell what you don't have - this should be logged as an error
+            PortfolioHoldingLog.objects.create(
+                portfolio=self.portfolio,
+                symbol=self.symbol,
+                transaction=self,
+                operation="SELL_ERROR",
+                quantity_before=None,
+                average_cost_before=None,
+                quantity_after=None,
+                average_cost_after=None,
+                transaction_type=self.transaction_type,
+                transaction_quantity=self.quantity,
+                transaction_price=self.price,
+                transaction_date=self.transaction_date,
+                holding_status="ERROR",
+                notes=f"ERROR: Attempted to sell {self.quantity} shares but holding not found!"
+            )
 
 
 class HoldingStatus(models.TextChoices):
@@ -606,6 +701,56 @@ class PortfolioHolding(models.Model):
         """Number of days this position has been held"""
         from datetime import date as dt_date
         return (dt_date.today() - self.first_purchase_date).days
+
+
+class PortfolioHoldingLog(models.Model):
+    """
+    Debug log for tracking all holding operations (create, update, delete).
+    Helps diagnose issues with holding calculations and transaction processing.
+    """
+    portfolio = models.ForeignKey(Portfolio, on_delete=models.CASCADE, related_name="holding_logs")
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
+    transaction = models.ForeignKey(PortfolioTransaction, on_delete=models.CASCADE, null=True, blank=True)
+
+    # Operation details
+    operation = models.CharField(max_length=20, choices=[
+        ("CREATE", "Create Holding"),
+        ("UPDATE", "Update Holding"),
+        ("DELETE", "Delete Holding"),
+        ("SELL_ERROR", "Sell Error - Holding Not Found"),
+    ])
+
+    # Holding state BEFORE operation
+    quantity_before = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    average_cost_before = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Holding state AFTER operation
+    quantity_after = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    average_cost_after = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Transaction details that triggered this
+    transaction_type = models.CharField(max_length=15)  # BUY or SELL
+    transaction_quantity = models.DecimalField(max_digits=10, decimal_places=4)
+    transaction_price = models.DecimalField(max_digits=10, decimal_places=2)
+    transaction_date = models.DateField()
+
+    # Additional context
+    holding_status = models.CharField(max_length=20, null=True, blank=True)
+    notes = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.created_at} - {self.operation}: {self.symbol.symbol} for {self.portfolio.name}"
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["portfolio", "-created_at"]),
+            models.Index(fields=["symbol", "-created_at"]),
+            models.Index(fields=["transaction"]),
+            models.Index(fields=["operation", "-created_at"]),
+        ]
 
 
 class PortfolioSnapshot(models.Model):
