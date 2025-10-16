@@ -325,6 +325,41 @@ class Portfolio(models.Model):
         help_text="If True, allows fractional share purchases. If False, rounds to whole shares only."
     )
 
+    # Interactive Brokers Integration
+    use_interactive_brokers = models.BooleanField(
+        default=False,
+        help_text="If True, trades will be executed via Interactive Brokers API. If False, trades are paper/simulated only."
+    )
+    ib_host = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        default="127.0.0.1",
+        help_text="Interactive Brokers Gateway/TWS host address (e.g., 127.0.0.1 or 192.168.0.85)"
+    )
+    ib_port = models.IntegerField(
+        blank=True,
+        null=True,
+        default=4001,
+        help_text="Interactive Brokers port number (4001 for IB Gateway live, 4002 for paper, 7497 for TWS live, 7496 for TWS paper)"
+    )
+    ib_client_id = models.IntegerField(
+        blank=True,
+        null=True,
+        default=1,
+        help_text="Unique client ID for this connection (1-999). Each portfolio should use a different client ID."
+    )
+    ib_account = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Interactive Brokers account number (optional, use if you have multiple accounts)"
+    )
+    ib_is_paper = models.BooleanField(
+        default=True,
+        help_text="If True, uses IB paper trading account. If False, uses live trading account. CAUTION: Live trading uses real money!"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -718,6 +753,7 @@ class PortfolioHoldingLog(models.Model):
         ("UPDATE", "Update Holding"),
         ("DELETE", "Delete Holding"),
         ("SELL_ERROR", "Sell Error - Holding Not Found"),
+        ("SELL_CORRECTION", "Sell Correction - Orphaned Holding Cleanup"),
     ])
 
     # Holding state BEFORE operation

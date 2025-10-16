@@ -145,6 +145,7 @@ class PortfolioSerializer(serializers.ModelSerializer):
     total_gain_loss_percent = serializers.SerializerMethodField()
     holdings_count = serializers.SerializerMethodField()
     active_holdings_count = serializers.SerializerMethodField()
+    ib_connection_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Portfolio
@@ -155,9 +156,12 @@ class PortfolioSerializer(serializers.ModelSerializer):
             "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent",
             # Day trading settings
             "is_automated", "dt_max_position_percent", "dt_per_trade_risk_fraction",
-            "dt_max_recommendations", "dt_allow_fractional_shares"
+            "dt_max_recommendations", "dt_allow_fractional_shares",
+            # Interactive Brokers settings
+            "use_interactive_brokers", "ib_host", "ib_port", "ib_client_id",
+            "ib_account", "ib_is_paper", "ib_connection_status"
         ]
-        read_only_fields = ["user", "created_at", "updated_at"]
+        read_only_fields = ["user", "created_at", "updated_at", "ib_connection_status"]
 
     def get_cash_balance(self, obj):
         return float(obj.cash_balance)
@@ -180,6 +184,21 @@ class PortfolioSerializer(serializers.ModelSerializer):
     def get_active_holdings_count(self, obj):
         return obj.holdings.filter(status="ACTIVE").count()
 
+    def get_ib_connection_status(self, obj):
+        """Return IB connection status for the portfolio"""
+        if not obj.use_interactive_brokers:
+            return {"enabled": False, "status": "disabled", "message": "Interactive Brokers integration is disabled"}
+
+        return {
+            "enabled": True,
+            "status": "configured",
+            "host": obj.ib_host,
+            "port": obj.ib_port,
+            "client_id": obj.ib_client_id,
+            "is_paper": obj.ib_is_paper,
+            "message": f"Ready to connect to {'paper' if obj.ib_is_paper else 'live'} trading account"
+        }
+
 
 class PortfolioSummarySerializer(serializers.ModelSerializer):
     """Lighter serializer for list views without holdings"""
@@ -200,7 +219,10 @@ class PortfolioSummarySerializer(serializers.ModelSerializer):
             "total_invested", "current_value", "total_gain_loss", "total_gain_loss_percent",
             # Day trading settings
             "is_automated", "dt_max_position_percent", "dt_per_trade_risk_fraction",
-            "dt_max_recommendations", "dt_allow_fractional_shares"
+            "dt_max_recommendations", "dt_allow_fractional_shares",
+            # Interactive Brokers settings
+            "use_interactive_brokers", "ib_host", "ib_port", "ib_client_id",
+            "ib_account", "ib_is_paper"
         ]
 
     def get_cash_balance(self, obj):

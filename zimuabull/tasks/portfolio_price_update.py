@@ -8,7 +8,7 @@ import pytz
 import yfinance as yf
 from celery import shared_task
 
-from zimuabull.models import Portfolio, PortfolioHolding
+from zimuabull.models import Portfolio, PortfolioHolding, PortfolioTransaction, PortfolioHoldingLog
 
 
 def resolve_tsx_ticker(symbol, exchange_code):
@@ -189,6 +189,91 @@ def update_market_indices():
     }
 
 
+def cleanup_orphaned_holdings():
+    """
+    Clean up holdings that have been fully sold but still exist in the database.
+
+    This function checks for holdings where:
+    1. A holding exists (status=ACTIVE)
+    2. The symbol has a SELL transaction within the last hour
+    3. The holding should have been deleted but wasn't
+
+    For each orphaned holding found:
+    - Creates a SELL_CORRECTION log entry
+    - Deletes the holding
+    - Returns summary of corrections made
+
+    Returns:
+        dict: Summary of cleaned holdings and any errors
+    """
+    from datetime import timedelta
+
+    cleaned_holdings = []
+    errors = []
+
+    try:
+        # Get all active holdings
+        active_holdings = PortfolioHolding.objects.filter(status='ACTIVE')
+
+        for holding in active_holdings:
+            try:
+                # Check for recent SELL transactions for this holding
+                one_hour_ago = timezone.now() - timedelta(hours=1)
+
+                recent_sells = PortfolioTransaction.objects.filter(
+                    portfolio=holding.portfolio,
+                    symbol=holding.symbol,
+                    transaction_type='SELL',
+                    created_at__gte=one_hour_ago
+                ).order_by('-created_at')
+
+                if recent_sells.exists():
+                    # Calculate total sells vs current holding quantity
+                    total_sold = sum(txn.quantity for txn in recent_sells)
+
+                    # If holding quantity is 0 or less, or very small (rounding errors)
+                    if holding.quantity <= Decimal('0.0001'):
+                        # This holding should have been deleted
+                        # Create a SELL_CORRECTION log entry
+                        PortfolioHoldingLog.objects.create(
+                            portfolio=holding.portfolio,
+                            symbol=holding.symbol,
+                            transaction=recent_sells.first(),  # Link to most recent sell
+                            operation='SELL_CORRECTION',
+                            quantity_before=holding.quantity,
+                            average_cost_before=holding.average_cost,
+                            quantity_after=Decimal('0'),
+                            average_cost_after=None,
+                            transaction_type='SELL',
+                            transaction_quantity=holding.quantity,
+                            transaction_price=holding.average_cost,
+                            transaction_date=recent_sells.first().transaction_date,
+                            holding_status='CORRECTED',
+                            notes=f"CORRECTION: Orphaned holding detected and removed. "
+                                  f"Holding had {holding.quantity} shares after SELL transaction(s) totaling {total_sold} shares. "
+                                  f"This should have been deleted during the original transaction. Auto-corrected by cleanup task."
+                        )
+
+                        # Delete the holding
+                        holding_info = f"{holding.portfolio.name} - {holding.symbol.symbol}: {holding.quantity} shares"
+                        holding.delete()
+
+                        cleaned_holdings.append(holding_info)
+
+            except Exception as e:
+                error_msg = f"Error processing holding {holding.id} ({holding.symbol.symbol}): {str(e)}"
+                errors.append(error_msg)
+
+    except Exception as e:
+        errors.append(f"General cleanup error: {str(e)}")
+
+    return {
+        "cleaned_count": len(cleaned_holdings),
+        "cleaned_holdings": cleaned_holdings,
+        "errors": errors
+    }
+
+
 @shared_task
 def market_pulse_update():
     """
@@ -198,7 +283,8 @@ def market_pulse_update():
     This task:
     1. Updates all portfolio symbol prices
     2. Updates market indices (S&P 500, NASDAQ, TSX, etc.)
-    3. Only runs during market hours for efficiency
+    3. Cleans up orphaned holdings (holdings that should have been deleted)
+    4. Only runs during market hours for efficiency
 
     Returns comprehensive summary of all updates.
     """
@@ -222,9 +308,10 @@ def market_pulse_update():
             "timestamp": timezone.now().isoformat()
         }
 
-    # Run both updates
+    # Run all updates
     portfolio_report = update_portfolio_symbols_prices()
     indices_report = update_market_indices()
+    cleanup_report = cleanup_orphaned_holdings()
 
     # Combine reports
     return {
@@ -240,6 +327,11 @@ def market_pulse_update():
             "successful": len(indices_report.get("updated", [])),
             "failed": len(indices_report.get("failed", [])),
             "details": indices_report
+        },
+        "holding_cleanup": {
+            "cleaned": cleanup_report.get("cleaned_count", 0),
+            "errors": len(cleanup_report.get("errors", [])),
+            "details": cleanup_report
         }
     }
 
