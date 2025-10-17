@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import DaySymbol, Exchange, Symbol, PortfolioHoldingLog
+from .models import DaySymbol, Exchange, IBOrder, PortfolioHoldingLog, Symbol
 
 
 # Register your models here.
@@ -84,4 +84,88 @@ class PortfolioHoldingLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         # Keep logs for debugging - don't allow deletion
+        return False
+
+
+@admin.register(IBOrder)
+class IBOrderAdmin(admin.ModelAdmin):
+    list_display = (
+        "client_order_id",
+        "portfolio",
+        "symbol",
+        "action",
+        "quantity",
+        "status",
+        "ib_order_id",
+        "filled_price",
+        "submitted_at",
+        "filled_at",
+    )
+    list_filter = ("status", "action", "order_type", "portfolio")
+    search_fields = ("client_order_id", "ib_order_id", "symbol__symbol", "portfolio__name")
+    readonly_fields = (
+        "client_order_id",
+        "ib_order_id",
+        "ib_perm_id",
+        "submitted_at",
+        "filled_at",
+        "last_updated_at",
+        "created_at",
+        "updated_at",
+    )
+    ordering = ("-created_at",)
+
+    fieldsets = (
+        ("Basic Info", {
+            "fields": (
+                "portfolio",
+                "day_trade_position",
+                "symbol",
+                "client_order_id",
+            )
+        }),
+        ("Order Details", {
+            "fields": (
+                "action",
+                "order_type",
+                "quantity",
+                "limit_price",
+            )
+        }),
+        ("IB Info", {
+            "fields": (
+                "ib_order_id",
+                "ib_perm_id",
+                "status",
+                "status_message",
+            )
+        }),
+        ("Execution", {
+            "fields": (
+                "submitted_price",
+                "filled_price",
+                "filled_quantity",
+                "remaining_quantity",
+                "commission",
+            )
+        }),
+        ("Timestamps", {
+            "fields": (
+                "submitted_at",
+                "filled_at",
+                "last_updated_at",
+                "created_at",
+                "updated_at",
+            )
+        }),
+        ("Errors", {
+            "fields": (
+                "error_code",
+                "error_message",
+            )
+        }),
+    )
+
+    def has_add_permission(self, request):
+        # Orders should only be created by the system
         return False

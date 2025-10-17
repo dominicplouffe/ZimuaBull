@@ -1053,8 +1053,10 @@ class IntradayPriceSnapshot(models.Model):
 
 
 class DayTradePositionStatus(models.TextChoices):
-    OPEN = "OPEN"
-    CLOSED = "CLOSED"
+    PENDING = "PENDING"  # Order submitted but not filled
+    OPEN = "OPEN"  # Filled and active
+    CLOSING = "CLOSING"  # Sell order submitted but not filled
+    CLOSED = "CLOSED"  # Fully exited
     CANCELLED = "CANCELLED"
 
 
@@ -1099,6 +1101,99 @@ class DayTradePosition(models.Model):
 
     def __str__(self):
         return f"{self.trade_date} {self.symbol.symbol} ({self.status})"
+
+
+class IBOrderStatus(models.TextChoices):
+    PENDING = "PENDING"  # Created but not submitted
+    SUBMITTED = "SUBMITTED"  # Submitted to IB
+    FILLED = "FILLED"  # Completely filled
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"  # Partially filled
+    CANCELLED = "CANCELLED"  # Cancelled
+    REJECTED = "REJECTED"  # Rejected by IB
+
+
+class IBOrderAction(models.TextChoices):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class IBOrderType(models.TextChoices):
+    MARKET = "MKT"  # Market order
+    LIMIT = "LMT"  # Limit order
+    STOP = "STP"  # Stop order
+    STOP_LIMIT = "STP LMT"  # Stop limit order
+
+
+class IBOrder(models.Model):
+    """
+    Track Interactive Brokers orders and their status.
+    Used for async order execution and monitoring.
+    """
+    portfolio = models.ForeignKey(Portfolio, on_delete=models.CASCADE, related_name="ib_orders")
+    day_trade_position = models.ForeignKey(
+        DayTradePosition,
+        on_delete=models.CASCADE,
+        related_name="ib_orders",
+        null=True,
+        blank=True
+    )
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE, related_name="ib_orders")
+
+    # Order identification
+    ib_order_id = models.IntegerField(null=True, blank=True)  # IB's assigned order ID
+    ib_perm_id = models.IntegerField(null=True, blank=True)  # IB's permanent ID
+    client_order_id = models.CharField(max_length=100, unique=True)  # Our unique ID
+
+    # Order details
+    action = models.CharField(max_length=10, choices=IBOrderAction.choices)
+    order_type = models.CharField(max_length=10, choices=IBOrderType.choices, default=IBOrderType.MARKET)
+    quantity = models.DecimalField(max_digits=12, decimal_places=4)
+    limit_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+
+    # Order status
+    status = models.CharField(max_length=20, choices=IBOrderStatus.choices, default=IBOrderStatus.PENDING)
+    status_message = models.TextField(blank=True, null=True)
+
+    # Execution details
+    submitted_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    filled_price = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    filled_quantity = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    remaining_quantity = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+
+    # Commissions and costs
+    commission = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Timestamps
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    filled_at = models.DateTimeField(null=True, blank=True)
+    last_updated_at = models.DateTimeField(auto_now=True)
+
+    # Error tracking
+    error_code = models.IntegerField(null=True, blank=True)
+    error_message = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["portfolio", "-created_at"]),
+            models.Index(fields=["status", "-created_at"]),
+            models.Index(fields=["ib_order_id"]),
+            models.Index(fields=["day_trade_position"]),
+        ]
+
+    def __str__(self):
+        return f"IB Order {self.client_order_id}: {self.action} {self.quantity} {self.symbol.symbol} ({self.status})"
+
+    def is_active(self):
+        """Check if order is still active (not terminal state)"""
+        return self.status in [IBOrderStatus.PENDING, IBOrderStatus.SUBMITTED, IBOrderStatus.PARTIALLY_FILLED]
+
+    def is_complete(self):
+        """Check if order is completely filled"""
+        return self.status == IBOrderStatus.FILLED
 
 
 class News(models.Model):

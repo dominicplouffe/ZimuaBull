@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
@@ -15,17 +17,24 @@ import yfinance as yf
 
 from zimuabull.daytrading.dataset import build_dataset
 from zimuabull.daytrading.feature_builder import build_feature_snapshot
+from zimuabull.daytrading.ib_connector import IBConnectionError, IBConnector, IBOrderError
 from zimuabull.daytrading.modeling import load_model, prepare_features_for_inference
 from zimuabull.models import (
     DayTradePosition,
     DayTradePositionStatus,
     DayTradingRecommendation,
+    IBOrder,
+    IBOrderAction,
+    IBOrderStatus,
+    IBOrderType,
     Portfolio,
     PortfolioSnapshot,
     PortfolioTransaction,
     Symbol,
     TransactionType,
 )
+
+logger = logging.getLogger(__name__)
 
 NY_TZ = ZoneInfo("America/New_York")
 
@@ -403,14 +412,259 @@ def _create_day_trade_position(
     )
 
 
+def _submit_ib_buy_order(
+    connector: IBConnector,
+    portfolio: Portfolio,
+    symbol: Symbol,
+    shares: Decimal,
+    trade_date: date,
+    rank: int,
+) -> IBOrder | None:
+    """
+    Submit a BUY market order to Interactive Brokers.
+
+    Returns:
+        IBOrder if submitted successfully, None otherwise
+    """
+    try:
+        # Generate unique client order ID
+        client_order_id = f"BUY_{portfolio.id}_{symbol.id}_{trade_date}_{uuid.uuid4().hex[:8]}"
+
+        # Submit to IB
+        trade = connector.submit_market_order(
+            symbol=symbol,
+            action="BUY",
+            quantity=shares
+        )
+
+        # Create IBOrder record
+        ib_order = IBOrder.objects.create(
+            portfolio=portfolio,
+            symbol=symbol,
+            client_order_id=client_order_id,
+            ib_order_id=trade.order.orderId,
+            ib_perm_id=trade.order.permId,
+            action=IBOrderAction.BUY,
+            order_type=IBOrderType.MARKET,
+            quantity=shares,
+            status=IBOrderStatus.SUBMITTED,
+            submitted_at=dj_timezone.now(),
+            status_message=f"Rank {rank} - Submitted to IB"
+        )
+
+        logger.info(
+            f"IB BUY order submitted: {client_order_id}, "
+            f"IB Order ID: {trade.order.orderId}, "
+            f"{shares} shares of {symbol.symbol}"
+        )
+
+        return ib_order
+
+    except (IBConnectionError, IBOrderError) as e:
+        logger.error(
+            f"Failed to submit IB BUY order for {symbol.symbol}: {e}",
+            exc_info=True
+        )
+        return None
+
+
+def _submit_ib_sell_order(
+    connector: IBConnector,
+    portfolio: Portfolio,
+    position: DayTradePosition,
+    exit_reason: str,
+) -> IBOrder | None:
+    """
+    Submit a SELL market order to Interactive Brokers.
+
+    Returns:
+        IBOrder if submitted successfully, None otherwise
+    """
+    try:
+        # Generate unique client order ID
+        client_order_id = f"SELL_{portfolio.id}_{position.symbol.id}_{position.trade_date}_{uuid.uuid4().hex[:8]}"
+
+        # Submit to IB
+        trade = connector.submit_market_order(
+            symbol=position.symbol,
+            action="SELL",
+            quantity=position.shares
+        )
+
+        # Create IBOrder record
+        ib_order = IBOrder.objects.create(
+            portfolio=portfolio,
+            day_trade_position=position,
+            symbol=position.symbol,
+            client_order_id=client_order_id,
+            ib_order_id=trade.order.orderId,
+            ib_perm_id=trade.order.permId,
+            action=IBOrderAction.SELL,
+            order_type=IBOrderType.MARKET,
+            quantity=position.shares,
+            status=IBOrderStatus.SUBMITTED,
+            submitted_at=dj_timezone.now(),
+            status_message=f"Exit reason: {exit_reason}"
+        )
+
+        logger.info(
+            f"IB SELL order submitted: {client_order_id}, "
+            f"IB Order ID: {trade.order.orderId}, "
+            f"{position.shares} shares of {position.symbol.symbol}"
+        )
+
+        return ib_order
+
+    except (IBConnectionError, IBOrderError) as e:
+        logger.error(
+            f"Failed to submit IB SELL order for {position.symbol.symbol}: {e}",
+            exc_info=True
+        )
+        return None
+
+
 def execute_recommendations(
     recommendations: list[Recommendation],
     portfolio: Portfolio,
     trade_date: date,
 ) -> list[DayTradePosition]:
+    """
+    Execute trading recommendations.
+
+    If portfolio uses Interactive Brokers:
+        - Submits market orders to IB
+        - Creates positions with PENDING status
+        - Returns immediately (order monitor task handles fills)
+
+    If portfolio uses simulation:
+        - Creates transactions immediately
+        - Creates positions with OPEN status
+        - Returns filled positions
+    """
     executed_positions: list[DayTradePosition] = []
     if not recommendations:
         return executed_positions
+
+    # Interactive Brokers mode
+    if portfolio.use_interactive_brokers:
+        return _execute_recommendations_ib(recommendations, portfolio, trade_date)
+
+    # Simulated mode (original logic)
+    return _execute_recommendations_simulated(recommendations, portfolio, trade_date)
+
+
+def _execute_recommendations_ib(
+    recommendations: list[Recommendation],
+    portfolio: Portfolio,
+    trade_date: date,
+) -> list[DayTradePosition]:
+    """Execute recommendations via Interactive Brokers"""
+    executed_positions: list[DayTradePosition] = []
+
+    try:
+        connector = IBConnector(portfolio)
+        connector.connect()
+    except (IBConnectionError, ValueError) as e:
+        logger.error(f"Failed to connect to IB for portfolio {portfolio.id}: {e}")
+        return executed_positions
+
+    try:
+        for idx, rec in enumerate(recommendations, start=1):
+            if rec.symbol.exchange_id != portfolio.exchange_id:
+                continue
+
+            # Skip if a position already exists (any status)
+            existing_position = DayTradePosition.objects.filter(
+                portfolio=portfolio,
+                symbol=rec.symbol,
+                trade_date=trade_date,
+            ).first()
+            if existing_position:
+                logger.info(
+                    f"Skipping {rec.symbol.symbol} - position already exists "
+                    f"with status {existing_position.status}"
+                )
+                continue
+
+            # Quantize shares based on portfolio's fractional flag
+            if portfolio.dt_allow_fractional_shares:
+                shares = rec.shares.quantize(Decimal("0.0001"))
+            else:
+                shares = Decimal(str(int(rec.shares)))
+
+            if shares < 1:
+                continue
+
+            # Estimate cost (actual will be determined at fill)
+            estimated_cost = Decimal(str(rec.entry_price)) * shares
+
+            # Check if enough cash
+            if portfolio.cash_balance < estimated_cost:
+                logger.info(
+                    f"Insufficient cash for {rec.symbol.symbol}: "
+                    f"need ${estimated_cost}, have ${portfolio.cash_balance}"
+                )
+                continue
+
+            # Submit order to IB
+            ib_order = _submit_ib_buy_order(
+                connector=connector,
+                portfolio=portfolio,
+                symbol=rec.symbol,
+                shares=shares,
+                trade_date=trade_date,
+                rank=idx
+            )
+
+            if not ib_order:
+                logger.warning(f"Failed to submit IB order for {rec.symbol.symbol}")
+                continue
+
+            # Record recommendation
+            _record_recommendation(trade_date, rec, idx)
+
+            # Create position with PENDING status
+            # Position will be updated to OPEN when order fills
+            position = DayTradePosition.objects.create(
+                portfolio=portfolio,
+                symbol=rec.symbol,
+                trade_date=trade_date,
+                status=DayTradePositionStatus.PENDING,
+                shares=shares,
+                allocation=rec.allocation,
+                entry_price=Decimal(str(rec.entry_price)),  # Will be updated with actual fill price
+                entry_time=dj_timezone.now(),
+                target_price=Decimal(str(rec.target_price)).quantize(Decimal("0.01")),
+                stop_price=Decimal(str(rec.stop_price)).quantize(Decimal("0.01")),
+                confidence_score=rec.confidence_score,
+                predicted_return=rec.predicted_return,
+                recommendation_rank=idx,
+                notes=f"IB Order ID: {ib_order.ib_order_id}, Client Order ID: {ib_order.client_order_id}"
+            )
+
+            # Link order to position
+            ib_order.day_trade_position = position
+            ib_order.save(update_fields=["day_trade_position"])
+
+            executed_positions.append(position)
+            logger.info(
+                f"Created PENDING position for {rec.symbol.symbol}, "
+                f"IB Order ID: {ib_order.ib_order_id}"
+            )
+
+    finally:
+        connector.disconnect()
+
+    return executed_positions
+
+
+def _execute_recommendations_simulated(
+    recommendations: list[Recommendation],
+    portfolio: Portfolio,
+    trade_date: date,
+) -> list[DayTradePosition]:
+    """Execute recommendations in simulation mode (original logic)"""
+    executed_positions: list[DayTradePosition] = []
 
     with transaction.atomic():
         for idx, rec in enumerate(recommendations, start=1):
@@ -466,6 +720,7 @@ def execute_recommendations(
                 portfolio=portfolio,
                 symbol=rec.symbol,
                 trade_date=trade_date,
+                status=DayTradePositionStatus.OPEN,
                 shares=shares,
                 allocation=rec.allocation,
                 entry_price=entry_price,
@@ -489,7 +744,71 @@ def get_open_day_trade_positions(portfolio: Portfolio, trade_date: date | None =
 
 
 def close_position(position: DayTradePosition, exit_price: Decimal, reason: str):
+    """
+    Close a position.
+
+    If portfolio uses IB:
+        - Submits SELL market order
+        - Updates position to CLOSING status
+        - Order monitor task will complete the close when filled
+
+    If simulation:
+        - Creates SELL transaction immediately
+        - Updates position to CLOSED status
+    """
     portfolio = position.portfolio
+
+    # Interactive Brokers mode
+    if portfolio.use_interactive_brokers:
+        return _close_position_ib(position, reason)
+
+    # Simulated mode
+    return _close_position_simulated(position, exit_price, reason)
+
+
+def _close_position_ib(position: DayTradePosition, reason: str):
+    """Close position via Interactive Brokers"""
+    portfolio = position.portfolio
+
+    try:
+        connector = IBConnector(portfolio)
+        connector.connect()
+
+        # Submit SELL order
+        ib_order = _submit_ib_sell_order(
+            connector=connector,
+            portfolio=portfolio,
+            position=position,
+            exit_reason=reason
+        )
+
+        connector.disconnect()
+
+        if not ib_order:
+            logger.error(f"Failed to submit IB SELL order for position {position.id}")
+            return
+
+        # Update position to CLOSING status
+        position.status = DayTradePositionStatus.CLOSING
+        position.exit_reason = reason
+        position.save(update_fields=["status", "exit_reason", "updated_at"])
+
+        logger.info(
+            f"Position {position.id} marked as CLOSING, "
+            f"IB Order ID: {ib_order.ib_order_id}"
+        )
+
+    except (IBConnectionError, ValueError) as e:
+        logger.error(
+            f"Failed to close position {position.id} via IB: {e}",
+            exc_info=True
+        )
+
+
+def _close_position_simulated(position: DayTradePosition, exit_price: Decimal, reason: str):
+    """Close position in simulation mode (original logic)"""
+    portfolio = position.portfolio
+
     with transaction.atomic():
         # Use save() instead of create() to trigger holding updates
         txn = PortfolioTransaction(
