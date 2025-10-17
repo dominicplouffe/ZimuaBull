@@ -620,6 +620,16 @@ def _execute_recommendations_ib(
                 logger.warning(f"Failed to submit IB order for {rec.symbol.symbol}")
                 continue
 
+            # Reserve cash immediately when order is submitted
+            # This prevents over-committing cash with multiple pending orders
+            portfolio.cash_balance -= estimated_cost
+            portfolio.save(update_fields=["cash_balance", "updated_at"])
+
+            logger.info(
+                f"Reserved ${estimated_cost} for {rec.symbol.symbol}, "
+                f"remaining cash: ${portfolio.cash_balance}"
+            )
+
             # Record recommendation
             _record_recommendation(trade_date, rec, idx)
 

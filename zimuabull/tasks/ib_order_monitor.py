@@ -194,21 +194,54 @@ def _handle_filled_order(order: IBOrder, filled_qty: float, avg_fill_price: floa
 
         logger.info(
             f"Order {order.client_order_id} FILLED: "
-            f"{filled_qty} shares @ ${avg_fill_price}"
+            f"{filled_qty} shares @ ${avg_fill_price}, commission=${commission}"
         )
 
-        # Create transaction
-        txn_type = TransactionType.BUY if order.action == "BUY" else TransactionType.SELL
-        txn = PortfolioTransaction(
-            portfolio=order.portfolio,
-            symbol=order.symbol,
-            transaction_type=txn_type,
-            quantity=order.filled_quantity,
-            price=order.filled_price,
-            transaction_date=timezone.now().date(),
-            notes=f"IB Order {order.ib_order_id}: {order.client_order_id}",
-        )
-        txn.save()
+        # Handle cash management based on action type
+        if order.action == "BUY":
+            # For BUY orders: Cash was already deducted at order submission (estimated)
+            # Now adjust for the difference between estimated and actual cost
+            if order.day_trade_position:
+                position = order.day_trade_position
+                estimated_cost = position.entry_price * position.shares
+                actual_cost = order.filled_price * order.filled_quantity + Decimal(str(commission))
+                cash_adjustment = estimated_cost - actual_cost  # Positive if we over-reserved
+
+                order.portfolio.cash_balance += cash_adjustment
+                order.portfolio.save(update_fields=["cash_balance", "updated_at"])
+
+                logger.info(
+                    f"BUY cash adjustment: estimated=${estimated_cost}, "
+                    f"actual=${actual_cost}, refund=${cash_adjustment}"
+                )
+
+            # Create transaction but prevent double cash deduction
+            # We do this by setting skip_cash_update flag
+            txn = PortfolioTransaction(
+                portfolio=order.portfolio,
+                symbol=order.symbol,
+                transaction_type=TransactionType.BUY,
+                quantity=order.filled_quantity,
+                price=order.filled_price,
+                transaction_date=timezone.now().date(),
+                notes=f"IB Order {order.ib_order_id}: {order.client_order_id} (cash pre-deducted at order submission)",
+            )
+            # Save without cash update, but update holdings
+            super(PortfolioTransaction, txn).save()
+            txn._update_holding_for_buy()
+
+        else:  # SELL
+            # For SELL orders: Let transaction.save() add cash as normal
+            txn = PortfolioTransaction(
+                portfolio=order.portfolio,
+                symbol=order.symbol,
+                transaction_type=TransactionType.SELL,
+                quantity=order.filled_quantity,
+                price=order.filled_price,
+                transaction_date=timezone.now().date(),
+                notes=f"IB Order {order.ib_order_id}: {order.client_order_id}",
+            )
+            txn.save()  # Normal save - adds cash and updates holdings
 
         # Update position
         if order.day_trade_position:
@@ -272,10 +305,21 @@ def _handle_cancelled_order(order: IBOrder, results: dict):
 
     logger.info(f"Order {order.client_order_id} CANCELLED")
 
-    # If this was a pending BUY order, cancel the position too
+    # If this was a pending BUY order, refund reserved cash and cancel position
     if order.day_trade_position and order.action == "BUY":
         position = order.day_trade_position
         if position.status == DayTradePositionStatus.PENDING:
+            # Refund the reserved cash
+            estimated_cost = position.entry_price * position.shares
+            order.portfolio.cash_balance += estimated_cost
+            order.portfolio.save(update_fields=["cash_balance", "updated_at"])
+
+            logger.info(
+                f"Refunded ${estimated_cost} for cancelled BUY order, "
+                f"new balance: ${order.portfolio.cash_balance}"
+            )
+
+            # Cancel the position
             position.status = DayTradePositionStatus.CANCELLED
             position.notes = f"Order cancelled: {order.status_message}"
             position.save(update_fields=["status", "notes", "updated_at"])
