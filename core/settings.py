@@ -268,6 +268,16 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(minute="*/10", hour="13-20", day_of_week="1-5"),
         "options": {"queue": "pidashtasks"},
     },
+    "ib_order_monitor": {
+        "task": "zimuabull.tasks.ib_order_monitor.monitor_ib_orders",
+        "schedule": 30.0,  # Every 30 seconds
+        "options": {"queue": "pidashtasks"},
+    },
+    "ib_order_cleanup": {
+        "task": "zimuabull.tasks.ib_order_monitor.cancel_stale_ib_orders",
+        "schedule": crontab(minute="*/15", hour="13-20", day_of_week="1-5"),  # Every 15 minutes during market hours
+        "options": {"queue": "pidashtasks"},
+    },
     "day_trading_close_session_early": {
         "task": "zimuabull.tasks.day_trading.close_intraday_positions",
         "schedule": crontab(hour=19, minute=30, day_of_week="1-5"),
