@@ -93,6 +93,7 @@ def _process_order(connector: IBConnector, order: IBOrder, results: dict):
     Process a single IB order.
 
     Checks status and handles fills, partial fills, cancellations, and rejections.
+    Uses trade.fills list for accurate execution data.
     """
     try:
         # Get order status from IB
@@ -103,22 +104,47 @@ def _process_order(connector: IBConnector, order: IBOrder, results: dict):
             return
 
         ib_status = trade.orderStatus.status
-        filled_qty = float(trade.orderStatus.filled)
+
+        # Calculate filled quantity and average price from fills list
+        total_filled_qty = 0.0
+        total_value = 0.0
+        total_commission = 0.0
+
+        if trade.fills:
+            for fill in trade.fills:
+                qty = float(fill.execution.shares)
+                price = float(fill.execution.price)
+                total_filled_qty += qty
+                total_value += (qty * price)
+
+                # Get commission from commissionReport if available
+                if fill.commissionReport:
+                    total_commission += abs(float(fill.commissionReport.commission))
+
+            # Calculate average fill price
+            avg_fill_price = total_value / total_filled_qty if total_filled_qty > 0 else 0.0
+        else:
+            # Fallback to orderStatus if no fills yet
+            total_filled_qty = float(trade.orderStatus.filled)
+            avg_fill_price = float(trade.orderStatus.avgFillPrice) if trade.orderStatus.avgFillPrice > 0 else 0.0
+            if trade.orderStatus.commission:
+                total_commission = abs(float(trade.orderStatus.commission))
+
         remaining_qty = float(trade.orderStatus.remaining)
-        avg_fill_price = float(trade.orderStatus.avgFillPrice) if trade.orderStatus.avgFillPrice > 0 else None
 
         logger.debug(
             f"Order {order.ib_order_id}: status={ib_status}, "
-            f"filled={filled_qty}, remaining={remaining_qty}, "
-            f"avg_fill_price={avg_fill_price}"
+            f"filled={total_filled_qty}, remaining={remaining_qty}, "
+            f"avg_fill_price={avg_fill_price}, commission={total_commission}, "
+            f"fills_count={len(trade.fills) if trade.fills else 0}"
         )
 
         # Handle different statuses
         if ib_status in ["Filled", "ApiDone"]:
-            _handle_filled_order(order, filled_qty, avg_fill_price, trade, results)
+            _handle_filled_order(order, total_filled_qty, avg_fill_price, total_commission, trade, results)
 
         elif ib_status == "PartiallyFilled":
-            _handle_partially_filled_order(order, filled_qty, remaining_qty, avg_fill_price, results)
+            _handle_partially_filled_order(order, total_filled_qty, remaining_qty, avg_fill_price, total_commission, results)
 
         elif ib_status in ["Cancelled", "ApiCancelled"]:
             _handle_cancelled_order(order, results)
@@ -149,7 +175,7 @@ def _process_order(connector: IBConnector, order: IBOrder, results: dict):
         order.save(update_fields=["error_message", "updated_at"])
 
 
-def _handle_filled_order(order: IBOrder, filled_qty: float, avg_fill_price: float, trade, results: dict):
+def _handle_filled_order(order: IBOrder, filled_qty: float, avg_fill_price: float, commission: float, trade, results: dict):
     """Handle a completely filled order"""
     with transaction.atomic():
         # Update order
@@ -159,9 +185,9 @@ def _handle_filled_order(order: IBOrder, filled_qty: float, avg_fill_price: floa
         order.filled_at = timezone.now()
         order.remaining_quantity = Decimal("0")
 
-        # Extract commission if available
-        if trade.orderStatus.commission:
-            order.commission = Decimal(str(abs(trade.orderStatus.commission)))
+        # Set commission from fills
+        if commission > 0:
+            order.commission = Decimal(str(commission))
 
         order.status_message = "Order filled"
         order.save()
@@ -215,6 +241,7 @@ def _handle_partially_filled_order(
     filled_qty: float,
     remaining_qty: float,
     avg_fill_price: float,
+    commission: float,
     results: dict
 ):
     """Handle a partially filled order"""
@@ -222,8 +249,10 @@ def _handle_partially_filled_order(
     order.status = IBOrderStatus.PARTIALLY_FILLED
     order.filled_quantity = Decimal(str(filled_qty))
     order.remaining_quantity = Decimal(str(remaining_qty))
-    if avg_fill_price:
+    if avg_fill_price > 0:
         order.filled_price = Decimal(str(avg_fill_price))
+    if commission > 0:
+        order.commission = Decimal(str(commission))
     order.status_message = f"Partially filled: {filled_qty}/{float(order.quantity)}"
     order.save()
 
