@@ -3,6 +3,7 @@ Interactive Brokers connection management using ib_insync.
 
 Handles connection lifecycle, order submission, and status tracking.
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,11 +22,13 @@ logger = logging.getLogger(__name__)
 
 class IBConnectionError(Exception):
     """Raised when IB connection fails"""
+
     pass
 
 
 class IBOrderError(Exception):
     """Raised when order submission fails"""
+
     pass
 
 
@@ -71,12 +74,7 @@ class IBConnector:
                 f"for portfolio {self.portfolio.id} ({self.portfolio.name})"
             )
 
-            self.ib.connect(
-                host=host,
-                port=port,
-                clientId=client_id,
-                timeout=20
-            )
+            self.ib.connect(host=host, port=port, clientId=client_id, timeout=20)
 
             self._connected = True
             logger.info(f"Successfully connected to IB for portfolio {self.portfolio.id}")
@@ -130,13 +128,7 @@ class IBConnector:
         contract = Stock(ib_symbol, ib_exchange, "USD")
         return contract
 
-    def submit_market_order(
-        self,
-        symbol: Symbol,
-        action: str,
-        quantity: Decimal,
-        account: str | None = None
-    ) -> Trade:
+    def submit_market_order(self, symbol: Symbol, action: str, quantity: Decimal, account: str | None = None) -> Trade:
         """
         Submit a market order to IB.
 
@@ -177,17 +169,13 @@ class IBConnector:
             trade = self.ib.placeOrder(contract, order)
 
             logger.info(
-                f"Order submitted successfully. Order ID: {trade.order.orderId}, "
-                f"PermID: {trade.order.permId}"
+                f"Order submitted successfully. Contract ID: {trade.contract.conId}, PermID: {trade.order.permId}"
             )
 
             return trade
 
         except Exception as e:
-            logger.error(
-                f"Failed to submit order for {symbol.symbol}: {e}",
-                exc_info=True
-            )
+            logger.error(f"Failed to submit order for {symbol.symbol}: {e}", exc_info=True)
             raise IBOrderError(f"Order submission failed: {e}") from e
 
     def get_order_status(self, order_id: int) -> Trade | None:
@@ -208,7 +196,7 @@ class IBConnector:
 
         # Find matching trade
         for trade in trades:
-            if trade.order.orderId == order_id:
+            if trade.contract.conId == order_id:
                 return trade
 
         return None
@@ -254,11 +242,7 @@ class IBConnector:
 
         result = {}
         for item in summary:
-            result[item.tag] = {
-                "value": item.value,
-                "currency": item.currency,
-                "account": item.account
-            }
+            result[item.tag] = {"value": item.value, "currency": item.currency, "account": item.account}
 
         return result
 

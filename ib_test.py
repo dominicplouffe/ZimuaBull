@@ -1,22 +1,37 @@
-from ib_insync import *
+import os
+import django
+from decimal import Decimal
 
-# Connect to IB Gateway (adjust port/clientId if needed)
-ib = IB()
-ib.connect('192.168.0.85', 4002, clientId=1)
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+django.setup()
 
-contract = Stock('INTC', 'SMART', 'USD', primaryExchange='NASDAQ')
 
-order = MarketOrder('BUY', 1.00)
+from zimuabull.tasks import ib_order_monitor
+from zimuabull.tasks import day_trading
 
-trade = ib.placeOrder(contract, order)
+if __name__ == "__main__":
+    ib_order_monitor.monitor_ib_orders()
+    # day_trading.run_morning_trading_session()
 
-# Wait until the order is filled or cancelled
-ib.sleep(2)
-print(f"Order Status: {trade.orderStatus.status}")
-print(f"Filled Quantity: {trade.orderStatus.filled}")
+# from ib_insync import *
 
-# Disconnect when done
-ib.disconnect()
+# # Connect to IB Gateway (adjust port/clientId if needed)
+# ib = IB()
+# ib.connect('192.168.0.85', 4002, clientId=1)
+
+# contract = Stock('INTC', 'SMART', 'USD', primaryExchange='NASDAQ')
+
+# order = MarketOrder('BUY', 1.00)
+
+# trade = ib.placeOrder(contract, order)
+
+# # Wait until the order is filled or cancelled
+# ib.sleep(2)
+# print(f"Order Status: {trade.orderStatus.status}")
+# print(f"Filled Quantity: {trade.orderStatus.filled}")
+
+# # Disconnect when done
+# ib.disconnect()
 
 # from ib_insync import *
 

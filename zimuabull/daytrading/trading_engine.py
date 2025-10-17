@@ -442,7 +442,7 @@ def _submit_ib_buy_order(
             portfolio=portfolio,
             symbol=symbol,
             client_order_id=client_order_id,
-            ib_order_id=trade.order.orderId,
+            ib_order_id=trade.contract.conId,
             ib_perm_id=trade.order.permId,
             action=IBOrderAction.BUY,
             order_type=IBOrderType.MARKET,
