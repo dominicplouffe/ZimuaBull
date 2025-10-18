@@ -198,7 +198,10 @@ class IBConnector:
         for trade in trades:
             if trade.contract.conId == order_id:
                 return trade
-
+            if len(trade.fills) > 0:
+                for fill in trade.fills:
+                    if fill.execution.orderId == order_id:
+                        return trade
         return None
 
     def cancel_order(self, order_id: int) -> bool:

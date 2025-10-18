@@ -12,6 +12,7 @@ from zimuabull.tasks import day_trading
 if __name__ == "__main__":
     ib_order_monitor.monitor_ib_orders()
     # day_trading.run_morning_trading_session()
+    # day_trading.close_intraday_positions()
 
 # from ib_insync import *
 

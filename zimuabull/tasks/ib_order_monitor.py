@@ -231,7 +231,21 @@ def _handle_filled_order(order: IBOrder, filled_qty: float, avg_fill_price: floa
             txn._update_holding_for_buy()
 
         else:  # SELL
-            # For SELL orders: Let transaction.save() add cash as normal
+            # For SELL orders: Manually add cash and create transaction
+            # (similar to BUY handling to avoid stale portfolio reference issues)
+            sell_proceeds = order.filled_quantity * order.filled_price
+
+            # Manually update cash (don't rely on transaction.save() to avoid stale data issues)
+            order.portfolio.refresh_from_db()  # Ensure fresh data
+            order.portfolio.cash_balance += sell_proceeds
+            order.portfolio.save(update_fields=["cash_balance", "updated_at"])
+
+            logger.info(
+                f"SELL cash added: ${sell_proceeds}, "
+                f"new balance: ${order.portfolio.cash_balance}"
+            )
+
+            # Create transaction but prevent double cash addition
             txn = PortfolioTransaction(
                 portfolio=order.portfolio,
                 symbol=order.symbol,
@@ -239,9 +253,11 @@ def _handle_filled_order(order: IBOrder, filled_qty: float, avg_fill_price: floa
                 quantity=order.filled_quantity,
                 price=order.filled_price,
                 transaction_date=timezone.now().date(),
-                notes=f"IB Order {order.ib_order_id}: {order.client_order_id}",
+                notes=f"IB Order {order.ib_order_id}: {order.client_order_id} (cash pre-added)",
             )
-            txn.save()  # Normal save - adds cash and updates holdings
+            # Save without cash update, but update holdings
+            super(PortfolioTransaction, txn).save()
+            txn._update_holding_for_sell()
 
         # Update position
         if order.day_trade_position:
