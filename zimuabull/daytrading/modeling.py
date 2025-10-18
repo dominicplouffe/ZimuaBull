@@ -12,7 +12,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 
-from .constants import MODEL_DIR, MODEL_FILENAME, MODEL_METADATA_FILENAME, TARGET_COLUMN
+from .constants import MODEL_DIR, TARGET_COLUMN, get_model_filename, get_model_metadata_filename
 from .dataset import Dataset
 
 
@@ -111,11 +111,19 @@ def train_regression_model(dataset: Dataset, n_splits: int = 5) -> tuple[HistGra
     return model, metrics, features.columns, imputer
 
 
-def save_model(model: HistGradientBoostingRegressor, metrics: dict, feature_columns: pd.Index, imputer: SimpleImputer) -> Path:
-    """Save trained model, imputer, and metadata to disk."""
+def save_model(model: HistGradientBoostingRegressor, metrics: dict, feature_columns: pd.Index, imputer: SimpleImputer, version: str | None = None) -> Path:
+    """Save trained model, imputer, and metadata to disk.
+
+    Args:
+        model: Trained model
+        metrics: Training metrics dictionary
+        feature_columns: Feature column names
+        imputer: Fitted imputer
+        version: Feature version (e.g., 'v2', 'v3'). Defaults to current FEATURE_VERSION.
+    """
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    model_path = MODEL_DIR / MODEL_FILENAME
-    meta_path = MODEL_DIR / MODEL_METADATA_FILENAME
+    model_path = MODEL_DIR / get_model_filename(version)
+    meta_path = MODEL_DIR / get_model_metadata_filename(version)
 
     payload = {
         "metrics": metrics,
@@ -140,9 +148,16 @@ def save_model(model: HistGradientBoostingRegressor, metrics: dict, feature_colu
     return model_path
 
 
-def load_model():
-    """Load trained model, imputer, and feature columns from disk."""
-    model_path = MODEL_DIR / MODEL_FILENAME
+def load_model(version: str | None = None):
+    """Load trained model, imputer, and feature columns from disk.
+
+    Args:
+        version: Feature version (e.g., 'v2', 'v3'). Defaults to current FEATURE_VERSION.
+
+    Returns:
+        Tuple of (model, feature_columns, imputer)
+    """
+    model_path = MODEL_DIR / get_model_filename(version)
     if not model_path.exists():
         msg = f"Model file not found at {model_path}"
         raise FileNotFoundError(msg)

@@ -38,7 +38,8 @@ from zimuabull.daytrading.constants import (
     FEATURE_VERSION,
     MIN_TRAINING_ROWS,
     MODEL_DIR,
-    MODEL_METADATA_FILENAME,
+    get_model_filename,
+    get_model_metadata_filename,
 )
 from zimuabull.daytrading.dataset import load_dataset
 from zimuabull.daytrading.feature_builder import (
@@ -584,7 +585,7 @@ class Command(BaseCommand):
 
         # Save model
         self.stdout.write("\n💾 Saving model...")
-        save_path = save_model(model, metrics, feature_columns, imputer)
+        save_path = save_model(model, metrics, feature_columns, imputer, version=version)
         self.stdout.write(self.style.SUCCESS(f"✓ Model saved to: {save_path}"))
 
         return model, metrics, feature_columns, imputer, save_path
@@ -751,8 +752,8 @@ class Command(BaseCommand):
 
     def _upsert_existing_model_version(self, feature_version: str) -> None:
         """Capture metadata for the currently deployed model before retraining."""
-        model_path = MODEL_DIR / MODEL_FILENAME
-        meta_path = MODEL_DIR / MODEL_METADATA_FILENAME
+        model_path = MODEL_DIR / get_model_filename(feature_version)
+        meta_path = MODEL_DIR / get_model_metadata_filename(feature_version)
 
         if not model_path.exists() or not meta_path.exists():
             self.stdout.write(
@@ -848,7 +849,7 @@ class Command(BaseCommand):
     def _print_summary(self, metrics, version):
         """Print final summary"""
         # Load metadata if available
-        meta_path = MODEL_DIR / MODEL_METADATA_FILENAME
+        meta_path = MODEL_DIR / get_model_metadata_filename(version)
         if meta_path.exists():
             with open(meta_path) as f:
                 metadata = json.load(f)

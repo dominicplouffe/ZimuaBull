@@ -16,6 +16,18 @@ MODEL_DIR = Path("artifacts") / "daytrading"
 MODEL_FILENAME = "intraday_model_v2.joblib"  # Updated for v2 with HistGradientBoosting
 MODEL_METADATA_FILENAME = "intraday_model_v2_meta.json"
 
+
+def get_model_filename(version: str | None = None) -> str:
+    """Get model filename for a specific version (defaults to current FEATURE_VERSION)."""
+    ver = version or FEATURE_VERSION
+    return f"intraday_model_{ver}.joblib"
+
+
+def get_model_metadata_filename(version: str | None = None) -> str:
+    """Get model metadata filename for a specific version (defaults to current FEATURE_VERSION)."""
+    ver = version or FEATURE_VERSION
+    return f"intraday_model_{ver}_meta.json"
+
 # Training parameters
 TRAIN_START_DATE = None  # allows CLI callers to override
 MIN_TRAINING_ROWS = 500
