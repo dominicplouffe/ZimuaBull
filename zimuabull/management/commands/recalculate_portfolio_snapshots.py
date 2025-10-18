@@ -29,6 +29,7 @@ from zimuabull.models import (
     PortfolioHolding,
     DaySymbol,
 )
+from zimuabull.services.portfolio_risk import upsert_portfolio_risk_metrics
 
 
 class Command(BaseCommand):
@@ -187,6 +188,15 @@ class Command(BaseCommand):
                                 gain_loss_percent=snapshot_data['gain_loss_percent']
                             )
                             snapshots_created += 1
+
+                        try:
+                            upsert_portfolio_risk_metrics(portfolio, current_date)
+                        except Exception as exc:  # pragma: no cover - console output
+                            self.stdout.write(
+                                self.style.WARNING(
+                                    f"    Warning: failed to compute risk metrics for {portfolio.name} on {current_date}: {exc}"
+                                )
+                            )
                 else:
                     # Dry run - just count
                     if existing_snapshot:

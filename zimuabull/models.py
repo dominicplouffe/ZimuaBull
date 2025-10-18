@@ -807,6 +807,43 @@ class PortfolioSnapshot(models.Model):
         ordering = ["-date"]
 
 
+class PortfolioRiskMetrics(models.Model):
+    """
+    Stores portfolio-level risk diagnostics for historical analysis and algorithm tuning.
+    """
+
+    portfolio = models.ForeignKey(Portfolio, on_delete=models.CASCADE, related_name="risk_metrics")
+    date = models.DateField()
+
+    # Core risk statistics
+    sharpe_ratio = models.FloatField(null=True, blank=True)
+    sortino_ratio = models.FloatField(null=True, blank=True)
+    max_drawdown = models.FloatField(null=True, blank=True)
+    volatility = models.FloatField(null=True, blank=True)
+    beta = models.FloatField(null=True, blank=True)
+
+    # Concentration data
+    largest_position_pct = models.FloatField(null=True, blank=True)
+    sector_concentration = models.JSONField(default=dict, blank=True)
+
+    # Risk-adjusted performance
+    calmar_ratio = models.FloatField(null=True, blank=True)
+    information_ratio = models.FloatField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("portfolio", "date")
+        ordering = ["-date"]
+        indexes = [
+            models.Index(fields=["portfolio", "-date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.portfolio.name} - {self.date} risk metrics"
+
+
 class Conversation(models.Model):
     """Store LLM conversation history for context and continuity"""
     user = models.ForeignKey("auth.User", on_delete=models.CASCADE)

@@ -81,7 +81,7 @@ class PortfolioHoldingLog:  \# Debug logging for transaction issues
 
 #### **🚨 ISSUE \#1: No Risk Management Models**
 
-\# MISSING: Risk metrics tracking  
+\# MISSING: Risk metrics tracking  -- WORK DONE
 class PortfolioRiskMetrics(models.Model):  
     """Track risk metrics over time for algorithm tuning"""  
     portfolio \= models.ForeignKey(Portfolio, on\_delete=models.CASCADE)  

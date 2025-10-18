@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+import logging
 
 from django.db import models
 from django.utils import timezone
@@ -29,6 +30,9 @@ from zimuabull.models import (
     DayTradingRecommendation,
     FeatureSnapshot,
 )
+from zimuabull.services.portfolio_risk import upsert_portfolio_risk_metrics
+
+logger = logging.getLogger(__name__)
 
 NY_TZ = ZoneInfo("America/New_York")
 
@@ -301,11 +305,19 @@ def create_daily_portfolio_snapshots(self):
     for portfolio in all_portfolios:
         # Check if snapshot already exists for today
         if PortfolioSnapshot.objects.filter(portfolio=portfolio, date=snapshot_date).exists():
+            risk_state = "skipped"
+            try:
+                metrics_instance = upsert_portfolio_risk_metrics(portfolio, snapshot_date)
+                risk_state = "updated" if metrics_instance else "no_data"
+            except Exception as exc:  # pragma: no cover - logging protection
+                logger.exception("Failed to update risk metrics for portfolio %s on %s", portfolio.id, snapshot_date)
+                risk_state = "error"
             results.append({
                 "portfolio": portfolio.id,
                 "user": portfolio.user.username,
                 "status": "skipped",
-                "reason": "snapshot_exists"
+                "reason": "snapshot_exists",
+                "risk_metrics": risk_state,
             })
             continue
 
@@ -335,6 +347,15 @@ def create_daily_portfolio_snapshots(self):
             total_invested=initial_capital,
         )
 
+        risk_state = "updated"
+        try:
+            metrics_instance = upsert_portfolio_risk_metrics(portfolio, snapshot_date)
+            if not metrics_instance:
+                risk_state = "no_data"
+        except Exception as exc:  # pragma: no cover - logging protection
+            logger.exception("Failed to update risk metrics for portfolio %s on %s", portfolio.id, snapshot_date)
+            risk_state = "error"
+
         results.append({
             "portfolio": portfolio.id,
             "user": portfolio.user.username,
@@ -342,6 +363,7 @@ def create_daily_portfolio_snapshots(self):
             "status": "created",
             "total_value": float(total_value),
             "gain_loss": float(gain_loss),
+            "risk_metrics": risk_state,
         })
 
     return {
