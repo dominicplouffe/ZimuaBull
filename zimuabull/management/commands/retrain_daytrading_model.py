@@ -26,11 +26,12 @@ Usage:
 
 import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
 from zimuabull.daytrading.backtest import run_backtest
 from zimuabull.daytrading.constants import (
@@ -45,7 +46,7 @@ from zimuabull.daytrading.feature_builder import (
     update_labels_for_date,
 )
 from zimuabull.daytrading.modeling import save_model, train_regression_model
-from zimuabull.models import DaySymbol, FeatureSnapshot, Symbol
+from zimuabull.models import DaySymbol, FeatureSnapshot, ModelVersion, Symbol
 
 
 class Command(BaseCommand):
@@ -55,8 +56,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--exchange",
             type=str,
-            default="NASDAQ",
-            help="Exchange to process (default: NASDAQ)",
+            default=None,
+            help="Exchange to process (default: all exchanges). Use 'NASDAQ', 'NYSE', 'TSE', etc. or leave blank for all.",
         )
         parser.add_argument(
             "--training-days",
@@ -111,7 +112,7 @@ class Command(BaseCommand):
         self.stdout.write("=" * 80)
         self.stdout.write("🤖 AUTOMATED DAY TRADING MODEL RETRAINING")
         self.stdout.write("=" * 80)
-        self.stdout.write(f"\nExchange: {exchange}")
+        self.stdout.write(f"\nExchange: {exchange if exchange else 'ALL'}")
         self.stdout.write(f"Training window: {training_days} days")
         self.stdout.write(f"Backtest window: {backtest_days} days")
         self.stdout.write(f"Current feature version: {FEATURE_VERSION}")
@@ -156,13 +157,27 @@ class Command(BaseCommand):
         self.stdout.write("=" * 80)
         self._update_labels(start_date, end_date, new_version)
 
+        # Record currently deployed model (if not already captured) before training a new one
+        self._upsert_existing_model_version(feature_version=FEATURE_VERSION)
+
         # Step 6: Train model
         self.stdout.write("\n" + "=" * 80)
         self.stdout.write("🤖 STEP 6: TRAINING MODEL")
         self.stdout.write("=" * 80)
         training_start = end_date - timedelta(days=training_days)
-        model, metrics, feature_columns, imputer = self._train_model(
+        model, metrics, feature_columns, imputer, model_path = self._train_model(
             training_start, end_date, min_rows, new_version
+        )
+
+        model_version = self._record_model_version(
+            feature_version=new_version,
+            metrics=metrics,
+            model_path=model_path,
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"✓ Recorded model version {model_version.version} ({model_version.feature_version})"
+            )
         )
 
         # Step 7: Run backtest
@@ -189,32 +204,62 @@ class Command(BaseCommand):
     def _verify_prerequisites(self, exchange):
         """Verify that we have necessary data"""
         # Check symbols
-        symbols = Symbol.objects.filter(exchange__code=exchange)
-        symbol_count = symbols.count()
+        if exchange:
+            symbols = Symbol.objects.filter(exchange__code=exchange)
+            symbol_count = symbols.count()
 
-        if symbol_count == 0:
-            raise CommandError(f"No symbols found for exchange '{exchange}'")
+            if symbol_count == 0:
+                raise CommandError(f"No symbols found for exchange '{exchange}'")
 
-        self.stdout.write(f"✓ Found {symbol_count:,} symbols for {exchange}")
+            self.stdout.write(f"✓ Found {symbol_count:,} symbols for {exchange}")
+        else:
+            # All exchanges
+            symbols = Symbol.objects.all()
+            symbol_count = symbols.count()
+
+            if symbol_count == 0:
+                raise CommandError("No symbols found in database")
+
+            # Show breakdown by exchange
+            from django.db.models import Count
+            exchanges = Symbol.objects.values('exchange__code').annotate(count=Count('id')).order_by('-count')
+            self.stdout.write(f"✓ Found {symbol_count:,} symbols across {len(exchanges)} exchanges:")
+            for ex in exchanges:
+                self.stdout.write(f"    - {ex['exchange__code']}: {ex['count']:,} symbols")
 
         # Check DaySymbol data
         recent_date = date.today() - timedelta(days=7)
-        recent_days = DaySymbol.objects.filter(
-            symbol__exchange__code=exchange, date__gte=recent_date
-        ).count()
+        if exchange:
+            recent_days = DaySymbol.objects.filter(
+                symbol__exchange__code=exchange, date__gte=recent_date
+            ).count()
 
-        if recent_days == 0:
-            raise CommandError(
-                f"No recent DaySymbol data for {exchange}. "
-                f"Please run data collection first."
-            )
+            if recent_days == 0:
+                raise CommandError(
+                    f"No recent DaySymbol data for {exchange}. "
+                    f"Please run data collection first."
+                )
 
-        self.stdout.write(f"✓ Found {recent_days:,} recent DaySymbol records (last 7 days)")
+            self.stdout.write(f"✓ Found {recent_days:,} recent DaySymbol records (last 7 days)")
 
-        # Check technical indicators
-        days_with_rsi = DaySymbol.objects.filter(
-            symbol__exchange__code=exchange, date__gte=recent_date, rsi__isnull=False
-        ).count()
+            # Check technical indicators
+            days_with_rsi = DaySymbol.objects.filter(
+                symbol__exchange__code=exchange, date__gte=recent_date, rsi__isnull=False
+            ).count()
+        else:
+            recent_days = DaySymbol.objects.filter(date__gte=recent_date).count()
+
+            if recent_days == 0:
+                raise CommandError(
+                    "No recent DaySymbol data. Please run data collection first."
+                )
+
+            self.stdout.write(f"✓ Found {recent_days:,} recent DaySymbol records (last 7 days)")
+
+            # Check technical indicators
+            days_with_rsi = DaySymbol.objects.filter(
+                date__gte=recent_date, rsi__isnull=False
+            ).count()
 
         rsi_pct = (days_with_rsi / recent_days * 100) if recent_days > 0 else 0
 
@@ -233,10 +278,12 @@ class Command(BaseCommand):
         """Calculate RSI and MACD for symbols missing them"""
         from zimuabull.models import DaySymbol, Symbol
 
-        self.stdout.write(f"Calculating technical indicators for {exchange}...")
-
-        # Get symbols with missing indicators
-        symbols = Symbol.objects.filter(exchange__code=exchange)
+        if exchange:
+            self.stdout.write(f"Calculating technical indicators for {exchange}...")
+            symbols = Symbol.objects.filter(exchange__code=exchange)
+        else:
+            self.stdout.write("Calculating technical indicators for all exchanges...")
+            symbols = Symbol.objects.all()
 
         total_updated = 0
         symbols_processed = 0
@@ -313,13 +360,20 @@ class Command(BaseCommand):
             )
         else:
             # Find last feature snapshot date
-            last_snapshot = (
-                FeatureSnapshot.objects.filter(
-                    symbol__exchange__code=exchange, feature_version=version
+            if exchange:
+                last_snapshot = (
+                    FeatureSnapshot.objects.filter(
+                        symbol__exchange__code=exchange, feature_version=version
+                    )
+                    .order_by("-trade_date")
+                    .first()
                 )
-                .order_by("-trade_date")
-                .first()
-            )
+            else:
+                last_snapshot = (
+                    FeatureSnapshot.objects.filter(feature_version=version)
+                    .order_by("-trade_date")
+                    .first()
+                )
 
             if last_snapshot:
                 # Start from day after last snapshot
@@ -350,11 +404,15 @@ class Command(BaseCommand):
                 )
 
         # Skip too far in the past
-        earliest_data = (
-            DaySymbol.objects.filter(symbol__exchange__code=exchange)
-            .order_by("date")
-            .first()
-        )
+        if exchange:
+            earliest_data = (
+                DaySymbol.objects.filter(symbol__exchange__code=exchange)
+                .order_by("date")
+                .first()
+            )
+        else:
+            earliest_data = DaySymbol.objects.order_by("date").first()
+
         if earliest_data and start_date < earliest_data.date:
             start_date = earliest_data.date
             self.stdout.write(
@@ -367,13 +425,20 @@ class Command(BaseCommand):
         """Generate feature snapshots for date range"""
         import time
 
-        symbols = Symbol.objects.filter(exchange__code=exchange)
-        symbol_count = symbols.count()
-
-        self.stdout.write(
-            f"Generating features for {symbol_count} symbols "
-            f"from {start_date} to {end_date}..."
-        )
+        if exchange:
+            symbols = Symbol.objects.filter(exchange__code=exchange)
+            symbol_count = symbols.count()
+            self.stdout.write(
+                f"Generating features for {symbol_count} {exchange} symbols "
+                f"from {start_date} to {end_date}..."
+            )
+        else:
+            symbols = Symbol.objects.all()
+            symbol_count = symbols.count()
+            self.stdout.write(
+                f"Generating features for {symbol_count} symbols (all exchanges) "
+                f"from {start_date} to {end_date}..."
+            )
 
         # Generate date range (skip weekends)
         date_range = pd.date_range(start=start_date, end=end_date, freq="D")
@@ -522,7 +587,7 @@ class Command(BaseCommand):
         save_path = save_model(model, metrics, feature_columns, imputer)
         self.stdout.write(self.style.SUCCESS(f"✓ Model saved to: {save_path}"))
 
-        return model, metrics, feature_columns, imputer
+        return model, metrics, feature_columns, imputer, save_path
 
     def _run_backtest(
         self, model, feature_columns, imputer, start_date, end_date, version
@@ -683,6 +748,102 @@ class Command(BaseCommand):
                     "   ⚠ High MAE - predictions may be inaccurate"
                 )
             )
+
+    def _upsert_existing_model_version(self, feature_version: str) -> None:
+        """Capture metadata for the currently deployed model before retraining."""
+        model_path = MODEL_DIR / MODEL_FILENAME
+        meta_path = MODEL_DIR / MODEL_METADATA_FILENAME
+
+        if not model_path.exists() or not meta_path.exists():
+            self.stdout.write(
+                self.style.WARNING("⚠ Current model artifacts not found; skipping version snapshot.")
+            )
+            return
+
+        if ModelVersion.objects.filter(model_file=str(model_path)).exists():
+            # Version already recorded
+            return
+
+        try:
+            with open(meta_path) as fp:
+                metadata = json.load(fp)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.stdout.write(
+                self.style.WARNING(f"⚠ Unable to read existing model metadata ({exc}); skipping snapshot.")
+            )
+            return
+
+        metrics = metadata.get("metrics", {})
+        if not metrics:
+            self.stdout.write(
+                self.style.WARNING("⚠ Existing model metadata missing metrics; skipping snapshot.")
+            )
+            return
+
+        model_version = self._create_model_version_record(
+            feature_version=feature_version,
+            metrics=metrics,
+            model_path=model_path,
+            is_active=True,
+        )
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"✓ Recorded current model as version {model_version.version} before retraining"
+            )
+        )
+
+    def _create_model_version_record(
+        self,
+        feature_version: str,
+        metrics: dict,
+        model_path: Path,
+        *,
+        is_active: bool,
+    ) -> ModelVersion:
+        """Persist a model version row with shared logic."""
+        version_label = self._next_model_version_label(feature_version)
+
+        trained_at = timezone.now()
+        trained_at_str = metrics.get("trained_at")
+        if trained_at_str:
+            try:
+                parsed = datetime.fromisoformat(trained_at_str)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                trained_at = parsed
+            except ValueError:
+                trained_at = timezone.now()
+
+        model_version = ModelVersion.objects.create(
+            version=version_label,
+            model_file=str(model_path),
+            feature_version=feature_version,
+            trained_at=trained_at,
+            training_samples=int(metrics.get("n_samples", 0)),
+            cv_r2_mean=float(metrics.get("r2_mean", 0.0)),
+            cv_mae_mean=float(metrics.get("mae_mean", 0.0)),
+            is_active=is_active,
+        )
+
+        if is_active:
+            ModelVersion.objects.exclude(pk=model_version.pk).filter(is_active=True).update(is_active=False)
+
+        return model_version
+
+    def _record_model_version(self, feature_version, metrics, model_path: Path) -> ModelVersion:
+        """Persist model metadata for version tracking."""
+        return self._create_model_version_record(
+            feature_version=feature_version,
+            metrics=metrics,
+            model_path=model_path,
+            is_active=False,
+        )
+
+    def _next_model_version_label(self, feature_version: str) -> str:
+        """Generate incremental version label (e.g., v2.1, v2.2)."""
+        existing_count = ModelVersion.objects.filter(feature_version=feature_version).count()
+        suffix = existing_count + 1
+        return f"{feature_version}.{suffix}"
 
     def _print_summary(self, metrics, version):
         """Print final summary"""

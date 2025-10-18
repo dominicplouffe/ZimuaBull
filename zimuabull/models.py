@@ -1066,6 +1066,42 @@ class FeatureSnapshot(models.Model):
         return f"{self.trade_date} - {self.symbol.symbol} ({self.feature_version})"
 
 
+class ModelVersion(models.Model):
+    """Track ML model versions and performance over time."""
+
+    version = models.CharField(max_length=20, unique=True)
+    model_file = models.CharField(max_length=255)
+    feature_version = models.CharField(max_length=20)
+
+    # Training metadata
+    trained_at = models.DateTimeField()
+    training_samples = models.IntegerField()
+    cv_r2_mean = models.FloatField()
+    cv_mae_mean = models.FloatField()
+
+    # Production performance (updated externally)
+    deployed_at = models.DateTimeField(null=True, blank=True)
+    production_trades = models.IntegerField(default=0)
+    production_win_rate = models.FloatField(null=True, blank=True)
+    production_avg_return = models.FloatField(null=True, blank=True)
+    production_sharpe = models.FloatField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-trained_at"]
+        indexes = [
+            models.Index(fields=["feature_version", "-trained_at"]),
+            models.Index(fields=["is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.version} ({self.feature_version})"
+
+
 class IntradayPriceSnapshot(models.Model):
     """
     Captures intraday price observations used for monitoring stop/target triggers.
