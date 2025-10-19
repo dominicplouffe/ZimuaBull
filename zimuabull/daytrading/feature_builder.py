@@ -1,19 +1,50 @@
 import math
 from collections.abc import Iterable
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pandas as pd
 
-from zimuabull.models import DaySymbol, FeatureSnapshot, Symbol
+from zimuabull.models import (
+    DaySymbol,
+    FeatureSnapshot,
+    MarketIndex,
+    MarketIndexData,
+    MarketRegime,
+    NewsSentiment,
+    Symbol,
+)
 
 from .constants import (
     ATR_WINDOW,
     FEATURE_VERSION,
     LOOKBACK_WINDOWS,
     MIN_HISTORY_DAYS,
-    VOLUME_WINDOWS,
+VOLUME_WINDOWS,
 )
+
+MARKET_INDEX_MAP = {
+    "NASDAQ": "^IXIC",
+    "NYSE": "^GSPC",
+    "AMEX": "^GSPC",
+    "NYSE ARCA": "^GSPC",
+    "TSX": "^GSPTSE",
+    "TSE": "^GSPTSE",
+}
+
+_MARKET_INDEX_CACHE: dict[str, MarketIndex | None] = {}
+
+
+def _sanitize(value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(value) or math.isinf(value):
+        return None
+    return value
 
 
 def _encode_close_bucket(bucket: str | None) -> int:
@@ -86,6 +117,150 @@ def _history_dataframe(symbol: Symbol, end_date: date, limit: int) -> pd.DataFra
     return df
 
 
+def _get_market_index_symbol(exchange_code: str | None) -> str:
+    return MARKET_INDEX_MAP.get((exchange_code or "").upper(), "^GSPC")
+
+
+def _get_market_index(exchange_code: str | None) -> MarketIndex | None:
+    index_symbol = _get_market_index_symbol(exchange_code)
+    if index_symbol not in _MARKET_INDEX_CACHE:
+        _MARKET_INDEX_CACHE[index_symbol] = MarketIndex.objects.filter(symbol=index_symbol).first()
+    return _MARKET_INDEX_CACHE[index_symbol]
+
+
+_REGIME_ENCODING = {
+    MarketRegime.RegimeChoices.BULL_TRENDING: 2,
+    MarketRegime.RegimeChoices.BEAR_TRENDING: -2,
+    MarketRegime.RegimeChoices.HIGH_VOL: -1,
+    MarketRegime.RegimeChoices.LOW_VOL: 1,
+    MarketRegime.RegimeChoices.RANGING: 0,
+}
+
+
+def _encode_regime(regime_value: str | None) -> float | None:
+    if not regime_value:
+        return None
+    return float(_REGIME_ENCODING.get(regime_value, 0))
+
+
+def _augment_with_news_sentiment(features: dict[str, float | None], symbol: Symbol, trade_date: date) -> None:
+    start_date = trade_date - timedelta(days=3)
+    sentiments = list(
+        NewsSentiment.objects.filter(
+            news__symbols=symbol,
+            analyzed_at__date__gte=start_date,
+            analyzed_at__date__lt=trade_date,
+        )
+        .order_by("-analyzed_at")[:5]
+    )
+    scores = [float(item.sentiment_score) for item in sentiments]
+
+    features["news_sentiment_count"] = _sanitize(len(scores)) if scores else 0.0
+    features["news_sentiment_avg"] = _sanitize(sum(scores) / len(scores)) if scores else None
+    features["news_sentiment_max"] = _sanitize(max(scores)) if scores else None
+    features["news_sentiment_min"] = _sanitize(min(scores)) if scores else None
+
+    sentiment_momentum = None
+    if len(scores) >= 3:
+        recent = sum(scores[:2]) / len(scores[:2])
+        older = sum(scores[2:]) / len(scores[2:]) if len(scores[2:]) else recent
+        sentiment_momentum = recent - older
+    features["sentiment_momentum"] = _sanitize(sentiment_momentum)
+
+
+def _augment_with_sector_relative_strength(
+    features: dict[str, float | None],
+    symbol: Symbol,
+    last_trade_date: date,
+    symbol_return: float | None,
+) -> None:
+    if not symbol.sector or not symbol.exchange:
+        features["sector_return_prev"] = None
+        features["relative_strength_sector"] = None
+        return
+
+    sector_symbols = Symbol.objects.filter(sector=symbol.sector, exchange=symbol.exchange).exclude(id=symbol.id)
+    if not sector_symbols.exists():
+        features["sector_return_prev"] = None
+        features["relative_strength_sector"] = None
+        return
+
+    sector_days = DaySymbol.objects.filter(symbol__in=sector_symbols, date=last_trade_date).values("open", "close")
+    sector_returns = []
+    for record in sector_days:
+        open_price = record.get("open")
+        close_price = record.get("close")
+        if open_price and close_price:
+            sector_returns.append(_safe_percent(float(close_price), float(open_price)))
+
+    sector_returns = [_sanitize(value) for value in sector_returns if value is not None]
+    sector_returns = [value for value in sector_returns if value is not None]
+
+    if sector_returns:
+        sector_avg = float(sum(sector_returns) / len(sector_returns))
+        features["sector_return_prev"] = _sanitize(sector_avg)
+        if symbol_return is not None:
+            features["relative_strength_sector"] = _sanitize(symbol_return - sector_avg)
+        else:
+            features["relative_strength_sector"] = None
+    else:
+        features["sector_return_prev"] = None
+        features["relative_strength_sector"] = None
+
+
+def _augment_with_market_context(
+    features: dict[str, float | None],
+    symbol: Symbol,
+    last_trade_date: date,
+    symbol_return: float | None,
+) -> None:
+    exchange_code = symbol.exchange.code if symbol.exchange else None
+    market_index = _get_market_index(exchange_code)
+    if not market_index:
+        features["market_return_1d"] = None
+        features["relative_strength_market"] = None
+        features["market_regime_encoded"] = None
+        features["market_regime_trend_strength"] = None
+        features["market_regime_volatility_percentile"] = None
+        features["market_regime_vix_level"] = None
+        features["market_regime_max_positions"] = None
+        features["market_regime_risk_per_trade"] = None
+        return
+
+    index_data = (
+        MarketIndexData.objects.filter(index=market_index, date=last_trade_date)
+        .values("open", "close")
+        .first()
+    )
+
+    if index_data and index_data.get("open"):
+        market_return = _safe_percent(float(index_data["close"]), float(index_data["open"]))
+        market_return = _sanitize(market_return)
+    else:
+        market_return = None
+
+    features["market_return_1d"] = market_return
+    if symbol_return is not None and market_return is not None:
+        features["relative_strength_market"] = _sanitize(symbol_return - market_return)
+    else:
+        features["relative_strength_market"] = None
+
+    regime = MarketRegime.objects.filter(index=market_index, date=last_trade_date).first()
+    if regime:
+        features["market_regime_encoded"] = _encode_regime(regime.regime)
+        features["market_regime_trend_strength"] = _sanitize(regime.trend_strength)
+        features["market_regime_volatility_percentile"] = _sanitize(regime.volatility_percentile)
+        features["market_regime_vix_level"] = _sanitize(regime.vix_level)
+        features["market_regime_max_positions"] = _sanitize(regime.recommended_max_positions)
+        features["market_regime_risk_per_trade"] = _sanitize(regime.recommended_risk_per_trade)
+    else:
+        features["market_regime_encoded"] = None
+        features["market_regime_trend_strength"] = None
+        features["market_regime_volatility_percentile"] = None
+        features["market_regime_vix_level"] = None
+        features["market_regime_max_positions"] = None
+        features["market_regime_risk_per_trade"] = None
+
 def compute_feature_row(symbol: Symbol, trade_date: date) -> dict | None:
     """
     Build a feature dictionary for `symbol` on `trade_date`.
@@ -101,19 +276,12 @@ def compute_feature_row(symbol: Symbol, trade_date: date) -> dict | None:
     returns = closes.pct_change()
     volumes = hist_df["volume"]
 
-    def sanitize(value: float) -> float | None:
-        if value is None:
-            return None
-        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-            return None
-        return float(value)
-
     features: dict[str, float | None] = {}
 
     for window in LOOKBACK_WINDOWS:
         if len(returns) >= window + 1:
-            features[f"return_{window}d"] = sanitize(returns.iloc[-window:].sum())
-            features[f"momentum_{window}d"] = sanitize((closes.iloc[-1] / closes.iloc[-window]) - 1)
+            features[f"return_{window}d"] = _sanitize(returns.iloc[-window:].sum())
+            features[f"momentum_{window}d"] = _sanitize((closes.iloc[-1] / closes.iloc[-window]) - 1)
         else:
             features[f"return_{window}d"] = None
             features[f"momentum_{window}d"] = None
@@ -121,42 +289,53 @@ def compute_feature_row(symbol: Symbol, trade_date: date) -> dict | None:
     for window in VOLUME_WINDOWS:
         if len(volumes) >= window:
             avg_vol = volumes.iloc[-window:].mean()
-            features[f"avg_volume_{window}d"] = sanitize(avg_vol)
-            features[f"volume_ratio_{window}d"] = sanitize(latest["volume"] / avg_vol) if avg_vol else None
+            features[f"avg_volume_{window}d"] = _sanitize(avg_vol)
+            features[f"volume_ratio_{window}d"] = _sanitize(latest["volume"] / avg_vol) if avg_vol else None
             avg_dollar = (hist_df["close"].iloc[-window:] * volumes.iloc[-window:]).mean()
-            features[f"dollar_volume_avg_{window}d"] = sanitize(avg_dollar)
+            features[f"dollar_volume_avg_{window}d"] = _sanitize(avg_dollar)
         else:
             features[f"avg_volume_{window}d"] = None
             features[f"volume_ratio_{window}d"] = None
             features[f"dollar_volume_avg_{window}d"] = None
 
     if len(returns) >= 2:
-        features["volatility_10d"] = sanitize(returns.iloc[-10:].std()) if len(returns) >= 10 else None
-        features["volatility_20d"] = sanitize(returns.iloc[-20:].std()) if len(returns) >= 20 else None
+        features["volatility_10d"] = _sanitize(returns.iloc[-10:].std()) if len(returns) >= 10 else None
+        features["volatility_20d"] = _sanitize(returns.iloc[-20:].std()) if len(returns) >= 20 else None
     else:
         features["volatility_10d"] = None
         features["volatility_20d"] = None
 
     atr = _compute_atr(hist_df, ATR_WINDOW)
-    features["atr_14"] = sanitize(atr)
+    features["atr_14"] = _sanitize(atr)
 
-    features["thirty_day_trend"] = sanitize(latest.get("thirty_close_trend", None))
-    features["obv_signal_sum"] = sanitize(latest.get("obv_signal_sum", 0))
-    features["obv_status_num"] = sanitize(_obv_status_to_numeric(symbol.obv_status))
-    features["close_bucket_num"] = sanitize(_encode_close_bucket(symbol.close_bucket))
-    features["symbol_accuracy"] = sanitize(symbol.accuracy or 0.0)
-    features["rsi"] = sanitize(latest.get("rsi", None))
-    features["macd"] = sanitize(latest.get("macd", None))
-    features["macd_signal"] = sanitize(latest.get("macd_signal", None))
-    features["macd_histogram"] = sanitize(latest.get("macd_histogram", None))
+    features["thirty_day_trend"] = _sanitize(latest.get("thirty_close_trend", None))
+    features["obv_signal_sum"] = _sanitize(latest.get("obv_signal_sum", 0))
+    features["obv_status_num"] = _sanitize(_obv_status_to_numeric(symbol.obv_status))
+    features["close_bucket_num"] = _sanitize(_encode_close_bucket(symbol.close_bucket))
+    features["symbol_accuracy"] = _sanitize(symbol.accuracy or 0.0)
+    features["rsi"] = _sanitize(latest.get("rsi", None))
+    features["macd"] = _sanitize(latest.get("macd", None))
+    features["macd_signal"] = _sanitize(latest.get("macd_signal", None))
+    features["macd_histogram"] = _sanitize(latest.get("macd_histogram", None))
 
     # price relatives
-    features["price_relative_5d"] = sanitize(hist_df["close"].iloc[-1] / hist_df["close"].iloc[-5] - 1) if len(hist_df) >= 5 else None
-    features["price_relative_20d"] = sanitize(hist_df["close"].iloc[-1] / hist_df["close"].iloc[-20] - 1) if len(hist_df) >= 20 else None
+    features["price_relative_5d"] = _sanitize(hist_df["close"].iloc[-1] / hist_df["close"].iloc[-5] - 1) if len(hist_df) >= 5 else None
+    features["price_relative_20d"] = _sanitize(hist_df["close"].iloc[-1] / hist_df["close"].iloc[-20] - 1) if len(hist_df) >= 20 else None
+
+    last_trade_ts = hist_df.index[-1]
+    last_trade_date = last_trade_ts.date() if hasattr(last_trade_ts, "date") else last_trade_ts
+
+    symbol_return = features.get("return_1d")
+    if symbol_return is None:
+        symbol_return = _sanitize(_safe_percent(float(latest["close"]), float(latest["open"])))
+
+    _augment_with_news_sentiment(features, symbol, trade_date)
+    _augment_with_sector_relative_strength(features, symbol, last_trade_date, symbol_return)
+    _augment_with_market_context(features, symbol, last_trade_date, symbol_return)
 
     return {
         "features": features,
-        "previous_close": sanitize(latest["close"]),
+        "previous_close": _sanitize(latest["close"]),
     }
 
 

@@ -129,6 +129,7 @@ def update_market_indices():
     Returns summary of updates
     """
     from zimuabull.models import MarketIndex, MarketIndexData
+    from zimuabull.services.market_regime import calculate_market_regimes
 
     indices_updated = []
     indices_failed = []
@@ -171,6 +172,10 @@ def update_market_indices():
                                 "volume": int(row["Volume"]) if row["Volume"] > 0 else None,
                             }
                         )
+                        try:
+                            calculate_market_regimes(index=index, start_date=today, end_date=today)
+                        except Exception as regime_exc:  # pragma: no cover - logging path
+                            indices_failed.append(f"{index.symbol}: regime calc failed ({regime_exc!s})")
                         indices_updated.append(f"{index.symbol}: ${current_price:.2f}")
                     else:
                         indices_failed.append(f"{index.symbol}: No history data")

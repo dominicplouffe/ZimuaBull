@@ -80,6 +80,12 @@ class Command(BaseCommand):
                 "description": "Russell 2000 Index - Small cap US stocks",
                 "country": "United States"
             },
+            {
+                "name": "CBOE Volatility Index",
+                "symbol": "^VIX",
+                "description": "CBOE VIX Index - Market volatility gauge derived from S&P 500 options",
+                "country": "United States"
+            },
         ]
 
         created = 0

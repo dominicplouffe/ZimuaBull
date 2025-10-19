@@ -970,6 +970,42 @@ class MarketIndexData(models.Model):
         ]
 
 
+class MarketRegime(models.Model):
+    """Track detected market regimes for adaptive trading decisions."""
+
+    class RegimeChoices(models.TextChoices):
+        BULL_TRENDING = "BULL_TRENDING", "Bull Trending"
+        BEAR_TRENDING = "BEAR_TRENDING", "Bear Trending"
+        HIGH_VOL = "HIGH_VOL", "High Volatility"
+        LOW_VOL = "LOW_VOL", "Low Volatility"
+        RANGING = "RANGING", "Ranging/Choppy"
+
+    date = models.DateField()
+    index = models.ForeignKey(MarketIndex, on_delete=models.CASCADE, related_name="regimes")
+    regime = models.CharField(max_length=20, choices=RegimeChoices.choices)
+
+    vix_level = models.FloatField(null=True, blank=True)
+    trend_strength = models.FloatField()  # ADX value
+    volatility_percentile = models.FloatField()
+
+    recommended_max_positions = models.IntegerField()
+    recommended_risk_per_trade = models.FloatField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("index", "date")
+        ordering = ["-date"]
+        indexes = [
+            models.Index(fields=["index", "-date"]),
+            models.Index(fields=["regime", "-date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.index.symbol} {self.date} - {self.regime}"
+
+
 class DayTradingRecommendation(models.Model):
     """
     Track daily trading recommendations for intraday trading.

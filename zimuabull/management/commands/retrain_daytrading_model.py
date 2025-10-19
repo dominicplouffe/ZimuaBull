@@ -26,12 +26,13 @@ Usage:
 
 import json
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import pandas as pd
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
+import numpy as np
 
 from zimuabull.daytrading.backtest import run_backtest
 from zimuabull.daytrading.constants import (
@@ -47,7 +48,13 @@ from zimuabull.daytrading.feature_builder import (
     update_labels_for_date,
 )
 from zimuabull.daytrading.modeling import save_model, train_regression_model
-from zimuabull.models import DaySymbol, FeatureSnapshot, ModelVersion, Symbol
+from zimuabull.models import (
+    DaySymbol,
+    DayTradePosition,
+    FeatureSnapshot,
+    ModelVersion,
+    Symbol,
+)
 
 
 class Command(BaseCommand):
@@ -761,10 +768,6 @@ class Command(BaseCommand):
             )
             return
 
-        if ModelVersion.objects.filter(model_file=str(model_path)).exists():
-            # Version already recorded
-            return
-
         try:
             with open(meta_path) as fp:
                 metadata = json.load(fp)
@@ -781,17 +784,127 @@ class Command(BaseCommand):
             )
             return
 
+        existing_record = (
+            ModelVersion.objects.filter(model_file=str(model_path))
+            .order_by("-created_at")
+            .first()
+        )
+
+        earliest_trade_date = (
+            DayTradePosition.objects.order_by("trade_date")
+            .values_list("trade_date", flat=True)
+            .first()
+        )
+
+        if existing_record and existing_record.deployed_at:
+            start_date = existing_record.deployed_at.date()
+        elif existing_record and earliest_trade_date:
+            trained_date = existing_record.trained_at.date()
+            start_date = max(trained_date, earliest_trade_date)
+        else:
+            start_date = earliest_trade_date
+
+        if start_date is None:
+            self.stdout.write(
+                self.style.WARNING("⚠ No day trading positions found; skipping production metrics snapshot.")
+            )
+            return
+
+        production_stats = self._compute_production_metrics(start_date)
+        deployed_at = timezone.make_aware(
+            datetime.combine(start_date, time.min),
+            timezone=timezone.get_current_timezone(),
+        )
+
+        if existing_record:
+            existing_record.training_samples = int(metrics.get("n_samples", existing_record.training_samples))
+            existing_record.cv_r2_mean = float(metrics.get("r2_mean", existing_record.cv_r2_mean))
+            existing_record.cv_mae_mean = float(metrics.get("mae_mean", existing_record.cv_mae_mean))
+            if not existing_record.deployed_at:
+                existing_record.deployed_at = deployed_at
+            existing_record.production_trades = production_stats["trades"]
+            existing_record.production_win_rate = production_stats["win_rate"]
+            existing_record.production_avg_return = production_stats["avg_return"]
+            existing_record.production_sharpe = production_stats["sharpe"]
+            existing_record.is_active = True
+            existing_record.save(update_fields=[
+                "training_samples",
+                "cv_r2_mean",
+                "cv_mae_mean",
+                "deployed_at",
+                "production_trades",
+                "production_win_rate",
+                "production_avg_return",
+                "production_sharpe",
+                "is_active",
+                "updated_at",
+            ])
+            ModelVersion.objects.exclude(pk=existing_record.pk).filter(is_active=True).update(is_active=False)
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"✓ Updated current model version {existing_record.version} before retraining"
+                )
+            )
+            return
+
         model_version = self._create_model_version_record(
             feature_version=feature_version,
             metrics=metrics,
             model_path=model_path,
             is_active=True,
+            deployed_at=deployed_at,
+            production_stats=production_stats,
         )
         self.stdout.write(
             self.style.SUCCESS(
                 f"✓ Recorded current model as version {model_version.version} before retraining"
             )
         )
+
+    def _compute_production_metrics(self, start_date: date) -> dict:
+        """Compute production KPIs from day trading positions."""
+        closed_positions = DayTradePosition.objects.filter(
+            trade_date__gte=start_date,
+            exit_price__isnull=False,
+            entry_price__isnull=False,
+        )
+
+        trades = closed_positions.count()
+        if trades == 0:
+            return {"trades": 0, "win_rate": None, "avg_return": None, "sharpe": None}
+
+        wins = 0
+        returns: list[float] = []
+
+        for position in closed_positions.iterator():
+            entry_price = float(position.entry_price)
+            exit_price = float(position.exit_price)
+            if entry_price == 0:
+                continue
+
+            trade_return = (exit_price - entry_price) / entry_price
+            returns.append(trade_return)
+
+            if exit_price > entry_price:
+                wins += 1
+
+        if not returns:
+            return {"trades": trades, "win_rate": None, "avg_return": None, "sharpe": None}
+
+        avg_return = float(np.mean(returns))
+        win_rate = wins / len(returns) if returns else None
+
+        sharpe = None
+        std_dev = float(np.std(returns, ddof=0))
+        if std_dev > 0 and len(returns) > 1:
+            sharpe = float((np.mean(returns) / std_dev) * np.sqrt(len(returns)))
+
+        return {
+            "trades": len(returns),
+            "win_rate": win_rate,
+            "avg_return": avg_return,
+            "sharpe": sharpe,
+        }
 
     def _create_model_version_record(
         self,
@@ -800,6 +913,8 @@ class Command(BaseCommand):
         model_path: Path,
         *,
         is_active: bool,
+        deployed_at: datetime | None = None,
+        production_stats: dict | None = None,
     ) -> ModelVersion:
         """Persist a model version row with shared logic."""
         version_label = self._next_model_version_label(feature_version)
@@ -815,6 +930,8 @@ class Command(BaseCommand):
             except ValueError:
                 trained_at = timezone.now()
 
+        production_stats = production_stats or {}
+
         model_version = ModelVersion.objects.create(
             version=version_label,
             model_file=str(model_path),
@@ -823,6 +940,11 @@ class Command(BaseCommand):
             training_samples=int(metrics.get("n_samples", 0)),
             cv_r2_mean=float(metrics.get("r2_mean", 0.0)),
             cv_mae_mean=float(metrics.get("mae_mean", 0.0)),
+            deployed_at=deployed_at,
+            production_trades=int(production_stats.get("trades") or 0),
+            production_win_rate=production_stats.get("win_rate"),
+            production_avg_return=production_stats.get("avg_return"),
+            production_sharpe=production_stats.get("sharpe"),
             is_active=is_active,
         )
 
@@ -838,6 +960,8 @@ class Command(BaseCommand):
             metrics=metrics,
             model_path=model_path,
             is_active=False,
+            deployed_at=None,
+            production_stats={"trades": 0, "win_rate": None, "avg_return": None, "sharpe": None},
         )
 
     def _next_model_version_label(self, feature_version: str) -> str:
