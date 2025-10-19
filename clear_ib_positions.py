@@ -19,7 +19,7 @@ import logging
 import sys
 import time
 
-from ib_insync import IB, MarketOrder
+from ib_insync import IB, MarketOrder, Stock
 
 # Configure logging
 logging.basicConfig(
@@ -69,7 +69,6 @@ def clear_all_positions(host: str = "localhost", port: int = 7497, client_id: in
 
         for pos in positions:
             symbol = pos.contract.symbol
-            contract = pos.contract
             quantity = abs(pos.position)  # Use absolute value (make positive)
 
             # Skip if quantity is zero or negative (short positions)
@@ -84,6 +83,10 @@ def clear_all_positions(host: str = "localhost", port: int = 7497, client_id: in
                 continue
 
             try:
+                # Recreate contract with SMART routing to avoid direct routing fees/restrictions
+                contract = Stock(symbol, "SMART", "USD")
+                ib.qualifyContracts(contract)
+
                 # Create SELL market order
                 order = MarketOrder("SELL", quantity)
 
@@ -164,14 +167,14 @@ def main():
     parser.add_argument(
         "--host",
         type=str,
-        default="localhost",
-        help="IB Gateway/TWS host (default: localhost)"
+        default="192.168.0.85",
+        help="IB Gateway/TWS host (default: 192.168.0.85)"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=7497,
-        help="IB Gateway/TWS port (default: 7497 for paper trading)"
+        default=4002,
+        help="IB Gateway/TWS port (default: 4002 for paper trading)"
     )
     parser.add_argument(
         "--client-id",
