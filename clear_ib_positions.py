@@ -3,32 +3,23 @@
 Clear all positions from Interactive Brokers paper trading account.
 
 This script:
-1. Connects to IB Gateway/TWS
+1. Connects directly to IB Gateway/TWS
 2. Fetches all current positions
 3. Submits SELL market orders for each position
 4. Waits for order confirmations
 
 Usage:
-    python clear_ib_positions.py --portfolio-id <id>
-    python clear_ib_positions.py --portfolio-id 1 --dry-run  # Test without submitting orders
+    python clear_ib_positions.py
+    python clear_ib_positions.py --dry-run  # Test without submitting orders
+    python clear_ib_positions.py --host localhost --port 7497 --client-id 1
 """
 
 import argparse
 import logging
 import sys
 import time
-from decimal import Decimal
 
-import django
-
-# Setup Django
-import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
-django.setup()
-
-from zimuabull.daytrading.ib_connector import IBConnector, IBConnectionError, IBOrderError
-from zimuabull.models import Portfolio, Symbol
+from ib_insync import IB, MarketOrder
 
 # Configure logging
 logging.basicConfig(
@@ -39,164 +30,69 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_current_positions(connector: IBConnector):
-    """
-    Get all current positions from IB.
-
-    Returns:
-        List of position objects from IB
-    """
-    if not connector.is_connected():
-        raise IBConnectionError("Not connected to IB")
-
-    # Get positions from IB
-    positions = connector.ib.positions()
-
-    if not positions:
-        logger.info("No positions found in IB account")
-        return []
-
-    logger.info(f"Found {len(positions)} position(s) in IB account:")
-    for pos in positions:
-        logger.info(f"  - {pos.contract.symbol}: {pos.position} shares @ {pos.avgCost}")
-
-    return positions
-
-
-def find_or_create_symbol(ib_symbol: str, exchange_code: str, connector: IBConnector) -> Symbol:
-    """
-    Find or create a Symbol object for the given IB symbol.
-
-    Args:
-        ib_symbol: Symbol ticker from IB
-        exchange_code: Exchange code (e.g., 'NASDAQ', 'NYSE', 'TSE')
-        connector: IB connector instance
-
-    Returns:
-        Symbol model instance
-    """
-    from zimuabull.models import Exchange
-
-    # Try to find the symbol
-    # Handle different exchange codes
-    if exchange_code == "SMART":
-        # SMART routing - try NASDAQ first, then NYSE
-        symbol = Symbol.objects.filter(
-            symbol=ib_symbol,
-            exchange__code__in=["NASDAQ", "NYSE"]
-        ).first()
-    else:
-        symbol = Symbol.objects.filter(
-            symbol=ib_symbol,
-            exchange__code=exchange_code
-        ).first()
-
-    if symbol:
-        logger.debug(f"Found existing symbol: {symbol.symbol} on {symbol.exchange.code}")
-        return symbol
-
-    # Symbol not found - create a minimal one
-    logger.warning(f"Symbol {ib_symbol} not found in database. Creating minimal record.")
-
-    # Get or create exchange
-    if exchange_code == "SMART":
-        exchange_code = "NASDAQ"  # Default to NASDAQ for SMART routing
-
-    exchange, _ = Exchange.objects.get_or_create(
-        code=exchange_code,
-        defaults={
-            "name": exchange_code,
-            "country": "US" if exchange_code in ["NASDAQ", "NYSE"] else "CA"
-        }
-    )
-
-    # Create minimal symbol
-    symbol = Symbol.objects.create(
-        symbol=ib_symbol,
-        exchange=exchange,
-        name=ib_symbol,  # Use symbol as name
-        sector="Unknown",
-        industry="Unknown"
-    )
-
-    logger.info(f"Created new symbol: {symbol.symbol} on {symbol.exchange.code}")
-    return symbol
-
-
-def clear_all_positions(portfolio_id: int, dry_run: bool = False):
+def clear_all_positions(host: str = "localhost", port: int = 7497, client_id: int = 1, dry_run: bool = False):
     """
     Clear all positions from the IB account.
 
     Args:
-        portfolio_id: Portfolio ID to use for connection
+        host: IB Gateway/TWS host (default: localhost)
+        port: IB Gateway/TWS port (default: 7497 for paper trading)
+        client_id: IB API client ID (default: 1)
         dry_run: If True, only show what would be done without submitting orders
     """
-    # Get portfolio
-    try:
-        portfolio = Portfolio.objects.get(id=portfolio_id)
-    except Portfolio.DoesNotExist:
-        logger.error(f"Portfolio {portfolio_id} not found")
-        return False
-
-    logger.info(f"Using portfolio: {portfolio.name} (ID: {portfolio.id})")
-
-    # Validate IB configuration
-    if not portfolio.use_interactive_brokers:
-        logger.error(f"Portfolio {portfolio.id} does not have IB enabled")
-        return False
-
-    # Connect to IB
-    connector = IBConnector(portfolio)
+    ib = IB()
 
     try:
-        logger.info(f"Connecting to IB at {portfolio.ib_host}:{portfolio.ib_port}...")
-        connector.connect()
+        # Connect to IB
+        logger.info(f"Connecting to IB at {host}:{port} with client_id={client_id}...")
+        ib.connect(host=host, port=port, clientId=client_id, timeout=20)
         logger.info("✓ Connected to IB")
 
         # Get all positions
-        positions = get_current_positions(connector)
+        logger.info("\nFetching current positions...")
+        positions = ib.positions()
 
         if not positions:
-            logger.info("✓ No positions to clear")
+            logger.info("✓ No positions found in IB account")
             return True
+
+        logger.info(f"Found {len(positions)} position(s) in IB account:")
+        for pos in positions:
+            logger.info(f"  - {pos.contract.symbol} ({pos.contract.exchange}): {pos.position} shares @ avg cost {pos.avgCost}")
 
         # Submit SELL orders for each position
         logger.info(f"\n{'=' * 80}")
-        logger.info(f"Submitting SELL orders for {len(positions)} position(s)...")
+        logger.info(f"Processing {len(positions)} position(s)...")
         logger.info(f"{'=' * 80}\n")
 
-        submitted_orders = []
+        submitted_trades = []
 
         for pos in positions:
-            ib_symbol = pos.contract.symbol
-            quantity = abs(pos.position)  # Use absolute value (positive)
-            exchange = pos.contract.exchange
+            symbol = pos.contract.symbol
+            contract = pos.contract
+            quantity = abs(pos.position)  # Use absolute value (make positive)
 
-            if quantity <= 0:
-                logger.warning(f"Skipping {ib_symbol}: quantity is {pos.position}")
+            # Skip if quantity is zero or negative (short positions)
+            if pos.position <= 0:
+                logger.warning(f"Skipping {symbol}: position is {pos.position} (zero or short)")
                 continue
 
-            logger.info(f"Processing {ib_symbol}: {quantity} shares")
+            logger.info(f"Processing {symbol}: {quantity} shares")
 
             if dry_run:
-                logger.info(f"  [DRY RUN] Would submit SELL market order for {quantity} shares of {ib_symbol}")
+                logger.info(f"  [DRY RUN] Would submit SELL market order for {quantity} shares")
                 continue
 
             try:
-                # Find or create symbol in database
-                symbol = find_or_create_symbol(ib_symbol, exchange, connector)
+                # Create SELL market order
+                order = MarketOrder("SELL", quantity)
 
-                # Submit SELL market order
-                logger.info(f"  Submitting SELL market order for {quantity} shares of {ib_symbol}...")
-                trade = connector.submit_market_order(
-                    symbol=symbol,
-                    action="SELL",
-                    quantity=Decimal(str(quantity)),
-                    account=portfolio.ib_account
-                )
+                # Submit order
+                logger.info(f"  Submitting SELL market order for {quantity} shares...")
+                trade = ib.placeOrder(contract, order)
 
-                submitted_orders.append({
-                    "symbol": ib_symbol,
+                submitted_trades.append({
+                    "symbol": symbol,
                     "quantity": quantity,
                     "trade": trade
                 })
@@ -207,7 +103,7 @@ def clear_all_positions(portfolio_id: int, dry_run: bool = False):
                 time.sleep(0.5)
 
             except Exception as e:
-                logger.error(f"  ✗ Failed to submit order for {ib_symbol}: {e}")
+                logger.error(f"  ✗ Failed to submit order for {symbol}: {e}")
 
         if dry_run:
             logger.info(f"\n{'=' * 80}")
@@ -216,19 +112,18 @@ def clear_all_positions(portfolio_id: int, dry_run: bool = False):
             return True
 
         # Wait for order confirmations
-        if submitted_orders:
+        if submitted_trades:
             logger.info(f"\n{'=' * 80}")
-            logger.info(f"Waiting for order confirmations (30 seconds)...")
+            logger.info(f"Waiting for order confirmations...")
             logger.info(f"{'=' * 80}\n")
 
-            time.sleep(5)  # Initial wait
-
-            for i in range(5):  # Check 5 times over 25 seconds
-                connector.ib.sleep(5)
+            # Wait and check order status multiple times
+            for i in range(6):  # Check 6 times over 30 seconds
+                ib.sleep(5)
 
                 logger.info(f"Checking order status... ({(i+1)*5}s)")
 
-                for order_info in submitted_orders:
+                for order_info in submitted_trades:
                     trade = order_info["trade"]
                     status = trade.orderStatus.status
                     filled = trade.orderStatus.filled
@@ -236,27 +131,30 @@ def clear_all_positions(portfolio_id: int, dry_run: bool = False):
                     logger.info(f"  {order_info['symbol']}: {status} ({filled}/{order_info['quantity']} filled)")
 
             logger.info(f"\n{'=' * 80}")
-            logger.info("✓ All orders submitted successfully")
+            logger.info("✓ Order monitoring complete")
             logger.info(f"{'=' * 80}\n")
 
             # Show final positions
-            final_positions = get_current_positions(connector)
+            logger.info("Fetching final positions...")
+            final_positions = ib.positions()
+
             if not final_positions:
                 logger.info("✓ Account cleared - no positions remaining")
             else:
-                logger.warning(f"⚠ {len(final_positions)} position(s) still remaining (may take time to settle)")
+                logger.warning(f"⚠ {len(final_positions)} position(s) still remaining:")
+                for pos in final_positions:
+                    logger.warning(f"  - {pos.contract.symbol}: {pos.position} shares")
 
         return True
 
-    except IBConnectionError as e:
-        logger.error(f"Connection error: {e}")
-        return False
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
+        logger.error(f"Error: {e}", exc_info=True)
         return False
+
     finally:
-        connector.disconnect()
-        logger.info("Disconnected from IB")
+        if ib.isConnected():
+            ib.disconnect()
+            logger.info("Disconnected from IB")
 
 
 def main():
@@ -264,10 +162,22 @@ def main():
         description="Clear all positions from IB paper trading account"
     )
     parser.add_argument(
-        "--portfolio-id",
+        "--host",
+        type=str,
+        default="localhost",
+        help="IB Gateway/TWS host (default: localhost)"
+    )
+    parser.add_argument(
+        "--port",
         type=int,
-        required=True,
-        help="Portfolio ID to use for IB connection"
+        default=7497,
+        help="IB Gateway/TWS port (default: 7497 for paper trading)"
+    )
+    parser.add_argument(
+        "--client-id",
+        type=int,
+        default=1,
+        help="IB API client ID (default: 1)"
     )
     parser.add_argument(
         "--dry-run",
@@ -284,7 +194,12 @@ def main():
     if args.dry_run:
         logger.info("⚠ DRY RUN MODE - No orders will be submitted\n")
 
-    success = clear_all_positions(args.portfolio_id, args.dry_run)
+    success = clear_all_positions(
+        host=args.host,
+        port=args.port,
+        client_id=args.client_id,
+        dry_run=args.dry_run
+    )
 
     if success:
         logger.info("\n✓ Script completed successfully")
