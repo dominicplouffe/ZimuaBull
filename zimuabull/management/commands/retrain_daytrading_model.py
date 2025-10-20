@@ -47,14 +47,21 @@ from zimuabull.daytrading.feature_builder import (
     build_feature_snapshot,
     update_labels_for_date,
 )
-from zimuabull.daytrading.modeling import save_model, train_regression_model
+from zimuabull.daytrading.modeling import save_model
+from zimuabull.daytrading.modeling_ensemble import train_ensemble_model
 from zimuabull.models import (
     DaySymbol,
     DayTradePosition,
     FeatureSnapshot,
+    MarketIndex,
+    MarketIndexData,
+    MarketRegime,
     ModelVersion,
     Symbol,
 )
+from zimuabull.services.market_regime import get_market_index_for_exchange
+
+ENSEMBLE_HPO_ITERATIONS = 25
 
 
 class Command(BaseCommand):
@@ -177,37 +184,46 @@ class Command(BaseCommand):
             training_start, end_date, min_rows, new_version
         )
 
-        model_version = self._record_model_version(
-            feature_version=new_version,
-            metrics=metrics,
-            model_path=model_path,
-        )
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"✓ Recorded model version {model_version.version} ({model_version.feature_version})"
+        try:
+            model_version = self._record_model_version(
+                feature_version=new_version,
+                metrics=metrics,
+                model_path=model_path,
             )
-        )
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"✓ Recorded model version {model_version.version} ({model_version.feature_version})"
+                )
+            )
 
-        # Step 7: Run backtest
-        if not skip_backtest:
+            # Step 7: Run backtest
+            if not skip_backtest:
+                self.stdout.write("\n" + "=" * 80)
+                self.stdout.write("📈 STEP 7: RUNNING BACKTEST VALIDATION")
+                self.stdout.write("=" * 80)
+                backtest_start = end_date - timedelta(days=backtest_days)
+                self._run_backtest(
+                    model,
+                    feature_columns,
+                    imputer,
+                    backtest_start,
+                    end_date,
+                    new_version,
+                )
+
+            # Step 8: Summary
             self.stdout.write("\n" + "=" * 80)
-            self.stdout.write("📈 STEP 7: RUNNING BACKTEST VALIDATION")
+            self.stdout.write("✅ RETRAINING COMPLETE!")
             self.stdout.write("=" * 80)
-            backtest_start = end_date - timedelta(days=backtest_days)
-            self._run_backtest(
-                model,
-                feature_columns,
-                imputer,
-                backtest_start,
-                end_date,
-                new_version,
-            )
+            self._print_summary(metrics, new_version)
+        finally:
+            # Clean up loky executors to silence Python 3.13 multiprocessing warnings
+            try:
+                from joblib.externals.loky import get_reusable_executor
 
-        # Step 8: Summary
-        self.stdout.write("\n" + "=" * 80)
-        self.stdout.write("✅ RETRAINING COMPLETE!")
-        self.stdout.write("=" * 80)
-        self._print_summary(metrics, new_version)
+                get_reusable_executor().shutdown(wait=True)
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
 
     def _verify_prerequisites(self, exchange):
         """Verify that we have necessary data"""
@@ -281,6 +297,53 @@ class Command(BaseCommand):
                     "   ⚠ Low RSI coverage - will calculate indicators"
                 )
             )
+
+        # Market index and regime checks
+        recent_market_date = date.today() - timedelta(days=7)
+        if exchange:
+            index = get_market_index_for_exchange(exchange)
+            if not index:
+                raise CommandError(
+                    f"No market index configured for exchange '{exchange}'. "
+                    "Run 'python manage.py populate_market_indices --create-indices' first."
+                )
+            indices = [index]
+        else:
+            indices = list(MarketIndex.objects.all())
+            if not indices:
+                raise CommandError(
+                    "No market indices configured. "
+                    "Run 'python manage.py populate_market_indices --create-indices' first."
+                )
+
+        missing_index_data: list[str] = []
+        missing_regimes: list[str] = []
+        for index in indices:
+            data_count = MarketIndexData.objects.filter(index=index, date__gte=recent_market_date).count()
+            if data_count == 0:
+                missing_index_data.append(index.symbol)
+
+            regime_count = MarketRegime.objects.filter(index=index, date__gte=recent_market_date).count()
+            if regime_count == 0:
+                missing_regimes.append(index.symbol)
+
+        if missing_index_data:
+            symbols_str = ", ".join(missing_index_data)
+            raise CommandError(
+                f"Missing recent MarketIndexData for: {symbols_str}. "
+                "Run 'python manage.py populate_market_indices --fetch-data --days 30'."
+            )
+
+        if missing_regimes:
+            symbols_str = ", ".join(missing_regimes)
+            self.stdout.write(
+                self.style.WARNING(
+                    f"⚠ Market regimes missing for: {symbols_str}. "
+                    "Run 'python manage.py calculate_market_regimes --days 30'."
+                )
+            )
+        else:
+            self.stdout.write("✓ Market regimes available for required indices")
 
     def _calculate_indicators(self, exchange):
         """Calculate RSI and MACD for symbols missing them"""
@@ -544,7 +607,7 @@ class Command(BaseCommand):
         )
 
     def _train_model(self, start_date, end_date, min_rows, version):
-        """Train the regression model"""
+        """Train the regression or ensemble model."""
         self.stdout.write(f"Loading dataset from {start_date} to {end_date}...")
 
         dataset = load_dataset(
@@ -564,16 +627,17 @@ class Command(BaseCommand):
                 f"Extend the date range or collect more data."
             )
 
-        # Train model
-        self.stdout.write("\nTraining HistGradientBoostingRegressor...")
+        self.stdout.write("\nTraining Ensemble VotingRegressor (default pipeline)...")
         self.stdout.write(
-            "   • Using TimeSeriesSplit cross-validation (prevents data leakage)"
-        )
-        self.stdout.write(
-            "   • This may take 2-10 minutes depending on dataset size..."
+            f"   • RandomizedSearchCV hyperparameter tuning (n_iter={ENSEMBLE_HPO_ITERATIONS})"
         )
 
-        model, metrics, feature_columns, imputer = train_regression_model(dataset)
+        model, metrics, feature_columns, imputer = train_ensemble_model(
+            dataset,
+            perform_search=True,
+            n_iter=ENSEMBLE_HPO_ITERATIONS,
+        )
+        base_models = metrics.get("base_models", {})
 
         # Display metrics
         self.stdout.write(self.style.SUCCESS("\n✓ Training complete!"))
@@ -586,6 +650,12 @@ class Command(BaseCommand):
         )
         self.stdout.write(f"   • Samples:   {metrics['n_samples']:,}")
         self.stdout.write(f"   • Features:  {metrics['n_features']}")
+
+        if base_models:
+            self.stdout.write("\n🔧 Base Model Parameters:")
+            for name, params in base_models.items():
+                param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+                self.stdout.write(f"   • {name}: {param_str}")
 
         # Interpretation
         self._interpret_training_metrics(metrics)
@@ -983,6 +1053,8 @@ class Command(BaseCommand):
 
         self.stdout.write(f"\n📝 Summary:")
         self.stdout.write(f"   • Feature Version: {version}")
+        if metrics.get("model_type"):
+            self.stdout.write(f"   • Model Type: {metrics['model_type']}")
         self.stdout.write(f"   • Training Samples: {metrics['n_samples']:,}")
         self.stdout.write(f"   • Features: {metrics['n_features']}")
         self.stdout.write(
@@ -1079,3 +1151,4 @@ class Command(BaseCommand):
             hours = int(seconds / 3600)
             minutes = int((seconds % 3600) / 60)
             return f"{hours}h {minutes}m"
+ENSEMBLE_HPO_ITERATIONS = 25

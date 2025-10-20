@@ -15,8 +15,8 @@
 # 3️⃣ Update Labels (for each completed trading day)
 .venv/bin/python manage.py update_daytrading_labels --date 2025-10-17
 
-# 4️⃣ Train Model
-.venv/bin/python manage.py train_daytrading_model
+# 4️⃣ Retrain (ensemble model with auto HPO)
+.venv/bin/python manage.py retrain_daytrading_model
 
 # 5️⃣ Backtest
 .venv/bin/python manage.py backtest_daytrading \
@@ -44,8 +44,8 @@ for day in 14 15 16 17 18; do
   .venv/bin/python manage.py update_daytrading_labels --date 2025-10-$day
 done
 
-# 3. Retrain (last 90 days)
-.venv/bin/python manage.py train_daytrading_model \
+# 3. Retrain (ensemble, last 90 days)
+.venv/bin/python manage.py retrain_daytrading_model \
   --start-date 2025-07-20 \
   --end-date 2025-10-18
 
@@ -153,8 +153,8 @@ done
   --overwrite \
   --exchange NASDAQ
 
-# 3. Retrain
-.venv/bin/python manage.py train_daytrading_model
+# 3. Retrain (ensemble default)
+.venv/bin/python manage.py retrain_daytrading_model
 ```
 
 ---
@@ -178,9 +178,10 @@ done
 ### Commands
 - `generate_daytrading_features.py` - Create feature snapshots
 - `update_daytrading_labels.py` - Add actual outcomes
-- `train_daytrading_model.py` - Train ML model
+- `retrain_daytrading_model.py` - Retrain ensemble model with HPO
 - `backtest_daytrading.py` - Simulate trading
 - `calculate_technical_indicators.py` - RSI/MACD calculation
+- `calculate_market_regimes.py` - Backfill market regime classifications
 
 ### Code
 - `zimuabull/daytrading/feature_builder.py` - Feature engineering
@@ -216,43 +217,18 @@ for date in {2025-07-20..2025-10-17}; do
   .venv/bin/python manage.py update_daytrading_labels --date $date 2>/dev/null
 done
 
-# Train
-.venv/bin/python manage.py train_daytrading_model
-
-# Backtest
-.venv/bin/python manage.py backtest_daytrading \
-  --start-date 2025-09-18 \
-  --end-date 2025-10-17
+# Retrain (ensemble + HPO)
+.venv/bin/python manage.py retrain_daytrading_model
 ```
 
-### Single Symbol Testing
+### Automation
+
+#### Cron Job (Weekly Retraining)
 ```bash
-# Test entire pipeline on one symbol
-SYMBOL="AAPL"
-EXCHANGE="NASDAQ"
-DATE="2025-10-17"
-
-# 1. Ensure technical indicators
-.venv/bin/python manage.py calculate_technical_indicators \
-  --symbol $SYMBOL --exchange $EXCHANGE
-
-# 2. Generate features
-.venv/bin/python manage.py generate_daytrading_features \
-  --date $DATE --symbol $SYMBOL --exchange $EXCHANGE
-
-# 3. Update label
-.venv/bin/python manage.py update_daytrading_labels \
-  --date $DATE --symbol $SYMBOL --exchange $EXCHANGE
-```
-
----
-
-## Automation
-
-### Cron Job (Weekly Retraining)
-```bash
-# Add to crontab: Sunday 2 AM
-0 2 * * 0 /path/to/ZimuaBull/.venv/bin/python /path/to/ZimuaBull/manage.py train_daytrading_model --start-date $(date -d '90 days ago' +\%Y-\%m-\%d) --end-date $(date -d 'yesterday' +\%Y-\%m-\%d)
+# Add to crontab: Sunday 2 AM (includes regime refresh + ensemble retrain)
+0 1 * * 0 /path/to/ZimuaBull/.venv/bin/python /path/to/ZimuaBull/manage.py populate_market_indices --fetch-data --days 7
+30 1 * * 0 /path/to/ZimuaBull/.venv/bin/python /path/to/ZimuaBull/manage.py calculate_market_regimes --days 7
+0 2 * * 0 /path/to/ZimuaBull/.venv/bin/python /path/to/ZimuaBull/manage.py retrain_daytrading_model --start-date $(date -d '90 days ago' +\%Y-\%m-\%d) --end-date $(date -d 'yesterday' +\%Y-\%m-\%d)
 ```
 
 ### Daily Feature Generation
@@ -282,9 +258,9 @@ DATE="2025-10-17"
        └─> FeatureSnapshot (features + labels)
 
 5. Model Training
-   └─> train_daytrading_model
+   └─> retrain_daytrading_model
        └─> Load labeled snapshots
-       └─> Train HistGradientBoostingRegressor
+       └─> Train ensemble VotingRegressor (with HPO)
        └─> Save to artifacts/daytrading/
 
 6. Backtesting

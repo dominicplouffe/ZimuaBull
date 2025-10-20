@@ -33,6 +33,7 @@ from zimuabull.models import (
     Symbol,
     TransactionType,
 )
+from zimuabull.services.market_regime import get_regime_adjustments_for_portfolio
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,21 @@ def generate_recommendations(
     max_position_percent = float(portfolio.dt_max_position_percent)
     per_trade_risk_fraction = float(portfolio.dt_per_trade_risk_fraction)
     allow_fractional_shares = portfolio.dt_allow_fractional_shares
+
+    regime_adjustments = get_regime_adjustments_for_portfolio(portfolio, trade_date)
+    regime_confidence_thresholds = {
+        "BULL_TRENDING": 55.0,
+        "BEAR_TRENDING": 72.0,
+        "HIGH_VOL": 70.0,
+        "LOW_VOL": 50.0,
+        "RANGING": 60.0,
+    }
+    confidence_threshold = regime_confidence_thresholds.get(regime_adjustments.regime, 60.0)
+
+    if regime_adjustments.max_positions:
+        max_positions = max(1, min(max_positions, int(regime_adjustments.max_positions)))
+    if regime_adjustments.risk_per_trade:
+        per_trade_risk_fraction = max(0.001, min(per_trade_risk_fraction, float(regime_adjustments.risk_per_trade)))
     symbols = Symbol.objects.all()
     if exchange_filter:
         symbols = symbols.filter(exchange__code=exchange_filter)
@@ -304,6 +320,9 @@ def generate_recommendations(
         volatility = row.get("volatility_10d") or row.get("volatility_20d")
         confidence = _confidence_score(predicted_return, volatility)
         entry_price = float(row.get("previous_close") or symbol_obj.last_close)
+
+        if confidence < confidence_threshold:
+            continue
 
         stop_price, target_price = _calculate_stop_target(entry_price, row.get("atr_14"), predicted_return)
 

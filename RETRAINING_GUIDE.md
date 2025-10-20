@@ -30,7 +30,7 @@ Feature Snapshots (FeatureSnapshot)
     ↓
 Label Generation (intraday_return, max_favorable_excursion, etc.)
     ↓
-Model Training (HistGradientBoostingRegressor)
+Model Training (VotingRegressor Ensemble)
     ↓
 Backtesting
     ↓
@@ -121,6 +121,26 @@ print(f'DaySymbol records with MACD: {with_macd:,} / {total:,} ({with_macd/total
 ```
 
 **Expected output**: Should be >95% populated for symbols with enough history.
+
+### 3. Market Indices & Regimes
+
+The enriched feature set and regime adapter require:
+
+- Market index price history (including `^VIX`) in `MarketIndexData`
+- Recent `MarketRegime` records for each tracked index
+
+**Populate/refresh index data**:
+```bash
+.venv/bin/python manage.py populate_market_indices --create-indices
+.venv/bin/python manage.py populate_market_indices --fetch-data --days 365
+```
+
+**Backfill regimes**:
+```bash
+.venv/bin/python manage.py calculate_market_regimes --days 365
+```
+
+The retrain command now verifies this and will abort if recent index data is missing, warning if regimes need to be regenerated.
 
 ### 3. Minimum History Requirement
 
@@ -338,10 +358,10 @@ Now that you have features and labels, you can train the model!
 
 ```bash
 # Train with all available data
-.venv/bin/python manage.py train_daytrading_model
+.venv/bin/python manage.py retrain_daytrading_model
 
 # Or specify date range
-.venv/bin/python manage.py train_daytrading_model \
+.venv/bin/python manage.py retrain_daytrading_model \
   --start-date 2025-07-20 \
   --end-date 2025-10-17 \
   --min-rows 1000
@@ -361,11 +381,11 @@ The command will:
    - Encodes categorical features (exchange_code)
    - Handles missing values with median imputation
 
-2. **Train Model** (~2-10 minutes depending on dataset size)
-   - Uses `HistGradientBoostingRegressor` with optimized hyperparameters
-   - 5-fold TimeSeriesSplit cross-validation (prevents data leakage)
-   - Early stopping to prevent overfitting
-   - L2 regularization
+2. **Train Model** (~3-12 minutes depending on dataset size)
+   - Tunes three base learners (HistGradientBoosting, RandomForest, GradientBoosting) via RandomizedSearchCV
+   - Builds a `VotingRegressor` ensemble with the tuned estimators
+   - Uses TimeSeriesSplit cross-validation (prevents look-ahead bias)
+   - Logs best parameters for each base model
 
 3. **Save Model**
    - Saves to `artifacts/daytrading/intraday_model_v2.joblib`
@@ -378,9 +398,9 @@ The command will:
 📊 Loading dataset...
 ✓ Loaded 84,128 samples with 42 features
 
-🔧 Training HistGradientBoostingRegressor model...
-   • Using TimeSeriesSplit for cross-validation (prevents data leakage)
-   • Training may take 2-10 minutes depending on dataset size...
+🔧 Training Ensemble VotingRegressor...
+   • RandomizedSearchCV hyperparameter tuning (n_iter=25)
+   • Training may take 3-12 minutes depending on dataset size...
 
 ✓ Model training complete!
 
@@ -397,7 +417,10 @@ The command will:
 💾 Saving model...
 
 ✓ Model saved to: artifacts/daytrading/intraday_model_v2.joblib
-✓ Model type: HistGradientBoostingRegressor
+✓ Model type: EnsembleVotingRegressor
+   • hgb: {'learning_rate': 0.05, 'l2_regularization': 0.5, ...}
+   • rf: {'max_depth': 8, 'min_samples_split': 5, ...}
+   • gbr: {'max_depth': 3, 'n_estimators': 400, ...}
 ✓ Trained at: 2025-10-18T14:32:11.547291+00:00
 
 🎯 Next Steps:
@@ -677,7 +700,7 @@ Set up weekly retraining to keep the model fresh:
 
 ```bash
 # Add to crontab (runs every Sunday at 2 AM)
-0 2 * * 0 cd /path/to/ZimuaBull && .venv/bin/python manage.py train_daytrading_model --start-date $(date -d '90 days ago' +\%Y-\%m-\%d) --end-date $(date -d 'yesterday' +\%Y-\%m-\%d) >> /var/log/zimuabull/training.log 2>&1
+0 2 * * 0 cd /path/to/ZimuaBull && .venv/bin/python manage.py retrain_daytrading_model --start-date $(date -d '90 days ago' +\%Y-\%m-\%d) --end-date $(date -d 'yesterday' +\%Y-\%m-\%d) >> /var/log/zimuabull/training.log 2>&1
 ```
 
 Or use Celery Beat (see [core/settings.py](core/settings.py) CELERY_BEAT_SCHEDULE).
@@ -737,7 +760,7 @@ for ex in Symbol.objects.values('exchange__code').distinct():
 ls -lh artifacts/daytrading/
 
 # If not, train it
-.venv/bin/python manage.py train_daytrading_model
+.venv/bin/python manage.py retrain_daytrading_model
 ```
 
 ### Issue: Backtest shows poor performance (R² < 0, negative returns)
@@ -782,7 +805,7 @@ if with_macd / total < 0.90:
   --exchange NASDAQ
 
 # Retrain
-.venv/bin/python manage.py train_daytrading_model
+.venv/bin/python manage.py retrain_daytrading_model
 ```
 
 ### Issue: Feature generation is too slow
@@ -875,7 +898,7 @@ for date in {20..17}; do
 done
 
 # 5. Train model
-.venv/bin/python manage.py train_daytrading_model
+.venv/bin/python manage.py retrain_daytrading_model
 
 # 6. Backtest
 .venv/bin/python manage.py backtest_daytrading \
@@ -902,7 +925,7 @@ for day in 14 15 16 17 18; do
 done
 
 # 3. Retrain (last 90 days)
-.venv/bin/python manage.py train_daytrading_model \
+.venv/bin/python manage.py retrain_daytrading_model \
   --start-date 2025-07-20 \
   --end-date 2025-10-18
 
@@ -945,20 +968,26 @@ MODEL_DIR = Path("artifacts") / "daytrading"
 MODEL_FILENAME = "intraday_model_v2.joblib"
 ```
 
-### [zimuabull/daytrading/modeling.py](zimuabull/daytrading/modeling.py#L46-L57)
+### [zimuabull/daytrading/modeling_ensemble.py](zimuabull/daytrading/modeling_ensemble.py#L20-L120)
 
 ```python
-# Model hyperparameters
-model = HistGradientBoostingRegressor(
-    random_state=42,
-    max_iter=500,              # More = longer training, better fit
-    max_depth=6,               # Higher = more complex, risk overfitting
-    learning_rate=0.05,        # Lower = slower learning, more stable
-    min_samples_leaf=20,       # Higher = more conservative predictions
-    l2_regularization=1.0,     # Higher = more regularization, simpler model
-    early_stopping=True,
-    n_iter_no_change=20,
-)
+base_models = {
+    "hgb": (
+        HistGradientBoostingRegressor(random_state=random_state),
+        {"max_depth": [5, 7, 9], "learning_rate": [0.03, 0.05, 0.08], ...},
+    ),
+    "rf": (
+        RandomForestRegressor(random_state=random_state, n_jobs=-1),
+        {"n_estimators": [200, 400, 600], "max_depth": [6, 8, 10, None], ...},
+    ),
+    "gbr": (
+        GradientBoostingRegressor(random_state=random_state),
+        {"n_estimators": [200, 400, 600], "learning_rate": [0.03, 0.05, 0.08], ...},
+    ),
+}
+
+ensemble = VotingRegressor(estimators=estimators_for_ensemble, n_jobs=-1)
+ensemble.fit(X, y)
 ```
 
 ### [zimuabull/daytrading/feature_builder.py](zimuabull/daytrading/feature_builder.py#L9-L16)

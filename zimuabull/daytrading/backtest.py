@@ -100,10 +100,19 @@ def run_backtest(
         max_drawdown = max(max_drawdown, drawdown)
         equity.append((trade_date, capital))
 
-    equity_curve = pd.Series(dict(equity)).sort_index()
+    equity_curve = pd.Series(dict(equity), dtype=float).sort_index()
 
     total_return = (capital - bankroll) / bankroll if bankroll else 0
-    annualized_return = (1 + total_return) ** (252 / len(equity_curve)) - 1 if len(equity_curve) > 0 else 0
+
+    annualized_return = 0.0
+    if bankroll and len(equity_curve) >= 2:
+        start_date = equity_curve.index[0]
+        end_date = equity_curve.index[-1]
+        total_days = (end_date - start_date).days
+        if total_days > 0:
+            capital_ratio = capital / bankroll
+            annualized_return = capital_ratio ** (365.0 / total_days) - 1
+
     win_rate = wins / (wins + losses) if (wins + losses) > 0 else 0
 
     daily_returns = equity_curve.pct_change().dropna()

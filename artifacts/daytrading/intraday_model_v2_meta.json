@@ -1,13 +1,31 @@
 {
   "metrics": {
-    "r2_mean": -0.04429155975287728,
-    "r2_std": 0.028631917747068924,
-    "mae_mean": 0.014568488554365978,
-    "mae_std": 0.0006011019649261602,
+    "r2_mean": -0.10413518568217098,
+    "r2_std": 0.08483389526339075,
+    "mae_mean": 0.014507766367436305,
+    "mae_std": 0.0006801571417069577,
     "n_samples": 90228,
     "n_features": 36,
-    "trained_at": "2025-10-18T17:00:47.774363+00:00",
-    "model_type": "HistGradientBoostingRegressor"
+    "model_type": "EnsembleVotingRegressor",
+    "base_models": {
+      "hgb": {
+        "min_samples_leaf": 10,
+        "max_depth": 7,
+        "learning_rate": 0.03,
+        "l2_regularization": 0.5
+      },
+      "rf": {
+        "n_estimators": 600,
+        "min_samples_split": 10,
+        "max_depth": 6
+      },
+      "gbr": {
+        "subsample": 0.75,
+        "n_estimators": 200,
+        "max_depth": 3,
+        "learning_rate": 0.03
+      }
+    }
   },
   "feature_columns": [
     "rsi",
@@ -48,5 +66,5 @@
     "exchange_code_TSE"
   ],
   "target": "intraday_return",
-  "model_class": "HistGradientBoostingRegressor"
+  "model_class": "VotingRegressor"
 }

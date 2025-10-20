@@ -8,32 +8,20 @@ import pandas as pd
 from zimuabull.models import (
     DaySymbol,
     FeatureSnapshot,
-    MarketIndex,
     MarketIndexData,
     MarketRegime,
     NewsSentiment,
     Symbol,
 )
+from zimuabull.services.market_regime import get_market_index_for_exchange
 
 from .constants import (
     ATR_WINDOW,
     FEATURE_VERSION,
     LOOKBACK_WINDOWS,
     MIN_HISTORY_DAYS,
-VOLUME_WINDOWS,
+    VOLUME_WINDOWS,
 )
-
-MARKET_INDEX_MAP = {
-    "NASDAQ": "^IXIC",
-    "NYSE": "^GSPC",
-    "AMEX": "^GSPC",
-    "NYSE ARCA": "^GSPC",
-    "TSX": "^GSPTSE",
-    "TSE": "^GSPTSE",
-}
-
-_MARKET_INDEX_CACHE: dict[str, MarketIndex | None] = {}
-
 
 def _sanitize(value: float | int | None) -> float | None:
     if value is None:
@@ -115,17 +103,6 @@ def _history_dataframe(symbol: Symbol, end_date: date, limit: int) -> pd.DataFra
     df = df.sort_values("date")
     df.set_index("date", inplace=True)
     return df
-
-
-def _get_market_index_symbol(exchange_code: str | None) -> str:
-    return MARKET_INDEX_MAP.get((exchange_code or "").upper(), "^GSPC")
-
-
-def _get_market_index(exchange_code: str | None) -> MarketIndex | None:
-    index_symbol = _get_market_index_symbol(exchange_code)
-    if index_symbol not in _MARKET_INDEX_CACHE:
-        _MARKET_INDEX_CACHE[index_symbol] = MarketIndex.objects.filter(symbol=index_symbol).first()
-    return _MARKET_INDEX_CACHE[index_symbol]
 
 
 _REGIME_ENCODING = {
@@ -215,7 +192,7 @@ def _augment_with_market_context(
     symbol_return: float | None,
 ) -> None:
     exchange_code = symbol.exchange.code if symbol.exchange else None
-    market_index = _get_market_index(exchange_code)
+    market_index = get_market_index_for_exchange(exchange_code)
     if not market_index:
         features["market_return_1d"] = None
         features["relative_strength_market"] = None

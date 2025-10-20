@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from zimuabull.models import MarketIndex, MarketIndexData, MarketRegime
+from zimuabull.models import MarketIndex, MarketIndexData, MarketRegime, Portfolio
 
 ADX_PERIOD = 14
 VOL_LOOKBACK = 20
@@ -19,6 +20,27 @@ REGIME_CONFIG = {
     MarketRegime.RegimeChoices.LOW_VOL: {"max_positions": 6, "risk_per_trade": 0.025},
     MarketRegime.RegimeChoices.RANGING: {"max_positions": 4, "risk_per_trade": 0.015},
 }
+
+EXCHANGE_INDEX_MAP = {
+    "NASDAQ": "^IXIC",
+    "NYSE": "^GSPC",
+    "AMEX": "^GSPC",
+    "NYSE ARCA": "^GSPC",
+    "TSX": "^GSPTSE",
+    "TSE": "^GSPTSE",
+}
+
+_INDEX_CACHE: dict[str, MarketIndex | None] = {}
+
+
+@dataclass
+class RegimeAdjustments:
+    regime: Optional[str]
+    max_positions: Optional[int]
+    risk_per_trade: Optional[float]
+    trend_strength: Optional[float]
+    volatility_percentile: Optional[float]
+    vix_level: Optional[float]
 
 
 def calculate_market_regimes(
@@ -85,6 +107,38 @@ def calculate_market_regimes(
         regimes.append(regime_obj)
 
     return regimes
+
+
+def get_market_index_for_exchange(exchange_code: str | None) -> MarketIndex | None:
+    """Return the benchmark index for a given exchange code."""
+    if not exchange_code:
+        symbol = "^GSPC"
+    else:
+        symbol = EXCHANGE_INDEX_MAP.get(exchange_code.upper(), "^GSPC")
+
+    if symbol not in _INDEX_CACHE:
+        _INDEX_CACHE[symbol] = MarketIndex.objects.filter(symbol=symbol).first()
+    return _INDEX_CACHE[symbol]
+
+
+def get_regime_adjustments_for_portfolio(portfolio: Portfolio, trade_date: date) -> RegimeAdjustments:
+    """Return regime adjustments for the portfolio's exchange on the given date."""
+    market_index = get_market_index_for_exchange(portfolio.exchange.code if portfolio.exchange else None)
+    if not market_index:
+        return RegimeAdjustments(None, None, None, None, None, None)
+
+    regime = MarketRegime.objects.filter(index=market_index, date=trade_date).first()
+    if not regime:
+        return RegimeAdjustments(None, None, None, None, None, None)
+
+    return RegimeAdjustments(
+        regime=regime.regime,
+        max_positions=regime.recommended_max_positions,
+        risk_per_trade=regime.recommended_risk_per_trade,
+        trend_strength=regime.trend_strength,
+        volatility_percentile=regime.volatility_percentile,
+        vix_level=regime.vix_level,
+    )
 
 
 def _compute_adx(df: pd.DataFrame) -> pd.Series:
