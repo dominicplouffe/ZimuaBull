@@ -21,6 +21,7 @@ def get_env_variable(var_name, default_value=None):
     """Get environment variable or return default value"""
     return os.environ.get(var_name, default_value)
 
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 IS_PROD = os.environ.get("ENV", "local").lower() == "prod"
@@ -143,7 +144,13 @@ CORS_ALLOW_METHODS = [
     "PUT",
 ]
 
-CORS_ALLOW_HEADERS = [*list(default_headers), "WWW-AUTHORIZATION", "HTTP_WWW_AUTHORIZATION", "X-Fancontent-User", "Authorization"]
+CORS_ALLOW_HEADERS = [
+    *list(default_headers),
+    "WWW-AUTHORIZATION",
+    "HTTP_WWW_AUTHORIZATION",
+    "X-Fancontent-User",
+    "Authorization",
+]
 
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
@@ -231,17 +238,13 @@ OPENAI_MODEL = get_env_variable("OPENAI_MODEL", "gpt-4.1-mini")
 
 # Celery Settings
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379")
-CELERY_RESULT_BACKEND = os.environ.get(
-    "CELERY_RESULT_BACKEND", "redis://localhost:6379"
-)
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379")
 CELERY_TASK_DEFAULT_QUEUE = "pidashtasks"
 CELERY_TASK_QUEUE_MAX_PRIORITY = 10
 CELERY_TASK_DEFAULT_PRIORITY = 5
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_IGNORE_RESULT = True
-CELERY_TASK_ALWAYS_EAGER = (
-    os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
-)
+CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
 CELERY_BEAT_SCHEDULE = {
     "zimuabull.tasks.scan.scan": {
         "task": "zimuabull.tasks.scan.scan",
@@ -270,7 +273,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     "ib_order_monitor": {
         "task": "zimuabull.tasks.ib_order_monitor.monitor_ib_orders",
-        "schedule": 30.0,  # Every 30 seconds
+        "schedule": crontab(
+            minute="*/5",  # Every 5 minutes
+            hour="9-17",  # 9 AM to 5 PM EST
+            day_of_week="1-5",  # Monday to Friday
+        ),
         "options": {"queue": "pidashtasks"},
     },
     "ib_order_cleanup": {

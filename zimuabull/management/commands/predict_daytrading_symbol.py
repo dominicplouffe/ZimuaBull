@@ -10,6 +10,70 @@ from zimuabull.daytrading.modeling import load_model, prepare_features_for_infer
 from zimuabull.models import DaySymbol, FeatureSnapshot, Symbol
 
 
+class DayTradingPredictor:
+    """Reusable predictor that keeps the model in memory between score calls."""
+
+    def __init__(self):
+        self.model, self.trained_columns, self.imputer = load_model()
+
+    def predict(
+        self,
+        symbol_code: str,
+        trade_date: dt_date,
+        exchange_code: str | None = None,
+        overwrite: bool = False,
+    ) -> dict:
+        symbol_qs = Symbol.objects.filter(symbol=symbol_code.upper())
+        if exchange_code:
+            symbol_qs = symbol_qs.filter(exchange__code=exchange_code.upper())
+
+        symbol = symbol_qs.first()
+        if not symbol:
+            if exchange_code:
+                raise ValueError(f"Symbol '{symbol_code}' on exchange '{exchange_code}' not found.")
+            raise ValueError(f"Symbol '{symbol_code}' not found. Specify --exchange if needed.")
+
+        snapshot = (
+            FeatureSnapshot.objects.filter(symbol=symbol, trade_date=trade_date)
+            .order_by("-created_at")
+            .first()
+        )
+
+        if overwrite or snapshot is None:
+            snapshot = build_feature_snapshot(symbol, trade_date, overwrite=overwrite)
+
+        if snapshot is None:
+            raise ValueError(
+                f"Unable to build feature snapshot for {symbol.symbol} on {trade_date}. "
+                "Ensure historical data is available."
+            )
+
+        features = snapshot.features or {}
+        if not features:
+            raise ValueError(
+                f"Feature snapshot for {symbol.symbol} on {trade_date} is empty. "
+                "Regenerate features or check data completeness."
+            )
+
+        feature_df = pd.DataFrame([features])
+        encoded = prepare_features_for_inference(feature_df, self.trained_columns, self.imputer)
+        predicted_return = float(self.model.predict(encoded)[0])
+
+        actual_return: float | None = None
+        day_symbol = DaySymbol.objects.filter(symbol=symbol, date=trade_date).first()
+        if day_symbol and day_symbol.open:
+            actual_return = (float(day_symbol.close) - float(day_symbol.open)) / float(day_symbol.open)
+
+        return {
+            "symbol": symbol.symbol,
+            "exchange": symbol.exchange.code if symbol.exchange else None,
+            "trade_date": trade_date,
+            "predicted_return": predicted_return,
+            "actual_return": actual_return,
+            "snapshot": snapshot,
+        }
+
+
 class Command(BaseCommand):
     help = "Predict the intraday return for a symbol using the latest trained day trading model."
 
@@ -45,59 +109,28 @@ class Command(BaseCommand):
         else:
             trade_date = dt_date.today()
 
-        symbol_qs = Symbol.objects.filter(symbol=symbol_code)
-        if exchange_code:
-            symbol_qs = symbol_qs.filter(exchange__code=exchange_code.upper())
-
-        symbol = symbol_qs.first()
-        if not symbol:
-            if exchange_code:
-                raise CommandError(f"Symbol '{symbol_code}' on exchange '{exchange_code}' not found.")
-            raise CommandError(f"Symbol '{symbol_code}' not found. Specify --exchange if needed.")
-
-        snapshot = FeatureSnapshot.objects.filter(
-            symbol=symbol,
-            trade_date=trade_date,
-        ).order_by("-created_at").first()
-
-        if overwrite or snapshot is None:
-            snapshot = build_feature_snapshot(symbol, trade_date, overwrite=overwrite)
-
-        if snapshot is None:
-            raise CommandError(
-                f"Unable to build feature snapshot for {symbol_code} on {trade_date}. "
-                "Ensure historical data is available."
+        predictor = DayTradingPredictor()
+        try:
+            result = predictor.predict(
+                symbol_code=symbol_code,
+                trade_date=trade_date,
+                exchange_code=exchange_code,
+                overwrite=overwrite,
             )
-
-        features = snapshot.features or {}
-        if not features:
-            raise CommandError(
-                f"Feature snapshot for {symbol_code} on {trade_date} is empty. "
-                "Regenerate features or check data completeness."
-            )
-
-        model, trained_columns, imputer = load_model()
-
-        feature_df = pd.DataFrame([features])
-        encoded = prepare_features_for_inference(feature_df, trained_columns, imputer)
-        predicted_return = float(model.predict(encoded)[0])
-
-        actual_return_pct: str | None = None
-        day_symbol = DaySymbol.objects.filter(symbol=symbol, date=trade_date).first()
-        if day_symbol:
-            open_price = float(day_symbol.open)
-            close_price = float(day_symbol.close)
-            if open_price:
-                actual_return = (close_price - open_price) / open_price
-                actual_return_pct = f"{actual_return * 100:.4f}%"
+        except ValueError as exc:
+            raise CommandError(str(exc)) from exc
 
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("Prediction complete"))
         self.stdout.write("-" * 60)
-        self.stdout.write(f"Symbol:        {symbol.symbol}")
-        self.stdout.write(f"Exchange:      {symbol.exchange.code}")
-        self.stdout.write(f"Trade Date:    {trade_date}")
-        self.stdout.write(f"Predicted Return (open→close %): {predicted_return * 100:.4f}%")
-        if actual_return_pct is not None:
-            self.stdout.write(f"Actual Return (open→close %):   {actual_return_pct}")
+        self.stdout.write(f"Symbol:        {result['symbol']}")
+        self.stdout.write(f"Exchange:      {result['exchange']}")
+        self.stdout.write(f"Trade Date:    {result['trade_date']}")
+        self.stdout.write(
+            f"Predicted Return (open→close %): {result['predicted_return'] * 100:.4f}%"
+        )
+        if result.get("actual_return") is not None:
+            self.stdout.write(
+                f"Actual Return (open→close %):   {result['actual_return'] * 100:.4f}%"
+            )
         self.stdout.write("-" * 60)
